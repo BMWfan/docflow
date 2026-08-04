@@ -25,6 +25,7 @@ const SHOP_START_URL = {
   openaiapi:    'https://platform.openai.com/settings/organization/billing/history',
   paypal:       'https://www.paypal.com/reports/accountStatements',
   revolut:      'https://business.revolut.com/billing',
+  deutschegiganetz: 'https://kundenportal.deutsche-giganetz.de/invoices',
 };
 
 // Shops mit Amazon-CSD-Problem: Tab-Navigation statt internes fetch()
@@ -262,6 +263,7 @@ function isLoginRedirect(url) {
     u.includes('/s/login')                    ||
     u.includes('accounts.google.com')         ||
     u.includes('login.microsoftonline.com')   ||
+    u.includes('ciamlogin.com')               ||
     u.includes('signin.ebay.')                ||
     u.includes('identity.linkedin.com')
   );

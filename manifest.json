@@ -40,7 +40,8 @@
     "*://admin.microsoft.com/*",
     "*://admin.cloud.microsoft/*",
     "*://www.paypal.com/*",
-    "*://business.revolut.com/*"
+    "*://business.revolut.com/*",
+    "*://kundenportal.deutsche-giganetz.de/*"
   ],
 
   "background": {
@@ -151,6 +152,11 @@
     {
       "matches": ["*://business.revolut.com/*"],
       "js": ["src/content.js", "src/plugins/revolut.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://kundenportal.deutsche-giganetz.de/*"],
+      "js": ["src/content.js", "src/plugins/deutschegiganetz.js"],
       "run_at": "document_idle"
     }
   ]

@@ -29,6 +29,7 @@ A Chrome / Edge browser extension (Manifest V3) that automatically downloads inv
 | Microsoft 365 | admin.microsoft.com |
 | OpenAI API | platform.openai.com |
 | Revolut Business | business.revolut.com |
+| Deutsche GigaNetz Kundenportal | kundenportal.deutsche-giganetz.de |
 
 > **Note on selectors:** Shop plugins scrape order history pages. Since shops update their frontends regularly, selectors may break over time. Fixes go into `src/plugins/<shop>.js`.
 
@@ -79,7 +80,8 @@ invoiceflow/
 │       ├── microsoft365.js
 │       ├── openaiapi.js
 │       ├── paypal.js
-│       └── revolut.js
+│       ├── revolut.js
+│       └── deutschegiganetz.js
 └── icons/
     ├── icon16.png
     ├── icon48.png

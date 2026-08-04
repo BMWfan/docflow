@@ -289,6 +289,7 @@ const SHOP_LABELS = {
   googleads: 'Google Ads', googlepay: 'Google Pay',
   linkedin: 'LinkedIn', metaads: 'Meta Ads', microsoft365: 'Microsoft 365',
   openaiapi: 'OpenAI API', paypal: 'PayPal', revolut: 'Revolut',
+  deutschegiganetz: 'Deutsche GigaNetz',
 };
 function shopLabel(id) { return SHOP_LABELS[id] || id; }
 
