@@ -314,15 +314,37 @@ function openTab(url) {
   return new Promise(resolve => chrome.tabs.create({ url, active: false }, resolve));
 }
 
-function waitForTabLoad(tabId) {
-  return new Promise(resolve => {
+function waitForTabLoad(tabId, timeoutMs = 45_000) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const cancelPoll = setInterval(() => {
+      if (activeJob?.cancelled) finish(new Error('Abgebrochen.'));
+    }, 500);
+    const timeoutTimer = setTimeout(
+      () => finish(new Error(`Tab-Ladezeit überschritten (${timeoutMs}ms).`)),
+      timeoutMs
+    );
+
+    function finish(err) {
+      if (done) return;
+      done = true;
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      clearInterval(cancelPoll);
+      clearTimeout(timeoutTimer);
+      if (err) reject(err); else resolve();
+    }
+
     function onUpdated(id, info) {
-      if (id === tabId && info.status === 'complete') {
-        chrome.tabs.onUpdated.removeListener(onUpdated);
-        resolve();
-      }
+      if (id === tabId && info.status === 'complete') finish();
     }
     chrome.tabs.onUpdated.addListener(onUpdated);
+
+    // Race-Fix: Der Tab kann bereits vor der Listener-Registrierung fertig
+    // geladen sein (z.B. bei sehr schnellen Seiten) — dann würde das
+    // 'complete'-Event nie (erneut) feuern und wir würden für immer hängen.
+    chrome.tabs.get(tabId).then(tab => {
+      if (tab?.status === 'complete') finish();
+    }).catch(() => {});
   });
 }
 

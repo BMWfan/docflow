@@ -145,7 +145,7 @@ elBtnStart.addEventListener('click', async () => {
     elBtnStart.classList.remove('cancel');
   });
 
-  await chrome.runtime.sendMessage({
+  const startResponse = await chrome.runtime.sendMessage({
     action: 'START_DOWNLOAD',
     config: {
       shops,
@@ -157,6 +157,16 @@ elBtnStart.addEventListener('click', async () => {
       shopCustomFields:  s.shopCustomFields || {},
     },
   });
+
+  if (startResponse?.error) {
+    appendLog('error', '!', startResponse.error);
+    progressPort.disconnect();
+    progressPort = null;
+    running = false;
+    elBtnStart.textContent = 'Download starten';
+    elBtnStart.classList.remove('cancel');
+    elProgressArea.classList.remove('visible');
+  }
 });
 
 function getDateRange() {
