@@ -158,6 +158,12 @@
       "matches": ["*://kundenportal.deutsche-giganetz.de/*"],
       "js": ["src/content.js", "src/plugins/deutschegiganetz.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://kundenportal.deutsche-giganetz.de/*"],
+      "js": ["src/plugins/deutschegiganetz-inject.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
     }
   ]
 }
