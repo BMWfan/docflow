@@ -25,6 +25,7 @@ const SHOP_START_URL = {
   openaiapi:    'https://platform.openai.com/settings/organization/billing/history',
   paypal:       'https://www.paypal.com/reports/accountStatements',
   revolut:      'https://business.revolut.com/billing',
+  sapfiori:     'https://saphsp.corp365.de/sap/bc/ui2/flp?sap-client=100&sap-ushell-config=headerless&sap-language=DE#ZXSSFORMVIEWER-display&/Categories?tab=2PAYSTUB',
 };
 
 // Shops mit Amazon-CSD-Problem: Tab-Navigation statt internes fetch()
@@ -95,7 +96,7 @@ function paperless(action, paperlessUrl, paperlessToken, params = {}) {
   });
 }
 
-// ─── Haupt-Download-Logik ─────────────────────────────────────────────────────
+// ─── Haupt-Dokumentlogik ──────────────────────────────────────────────────────
 
 async function startDownload(config) {
   const { shops, dateFrom, dateTo, paperlessUrl, paperlessToken, shopTags = {}, shopCustomFields = {} } = config;
@@ -117,6 +118,7 @@ async function startDownload(config) {
   let totalUploaded   = 0;
   let totalDuplicates = 0;
   let totalErrors     = 0;
+  let totalDiscovered = 0;
 
   for (const shopId of shops) {
     if (activeJob.cancelled) break;
@@ -131,60 +133,62 @@ async function startDownload(config) {
       await waitForLoginIfNeeded(tab.id, shopId, SHOP_START_URL[shopId]);
       await sleep(1200);
 
-      emit({ type: 'SHOP_STATUS', shop: shopId, message: 'Lade Bestellliste…' });
+      emit({ type: 'SHOP_STATUS', shop: shopId, message: 'Analysiere Dokumentquellen…' });
 
-      let invoices;
+      let documents;
       if (SHOPS_USE_PAGE_NAVIGATION.has(shopId)) {
-        invoices = await collectInvoicesViaNavigation(tab.id, shopId, dateFrom, dateTo);
+        documents = await collectInvoicesViaNavigation(tab.id, shopId, dateFrom, dateTo);
       } else {
-        const listResult = await sendToTab(tab.id, { action: 'GET_INVOICES', dateFrom, dateTo }, 120_000);
+        const listResult = await sendToTab(tab.id, { action: 'GET_DOCUMENTS', dateFrom, dateTo }, 120_000);
         if (listResult.error) throw new Error(listResult.error);
-        invoices = listResult.invoices ?? [];
+        documents = listResult.documents ?? listResult.invoices ?? [];
       }
-      emit({ type: 'SHOP_INVOICES_FOUND', shop: shopId, count: invoices.length });
+      totalDiscovered += documents.length;
+      emit({ type: 'SHOP_INVOICES_FOUND', shop: shopId, count: documents.length });
+      emit({ type: 'DOCUMENT_DISCOVERED', shop: shopId, message: `${documents.length} Dokumente erkannt` });
 
-      for (let i = 0; i < invoices.length; i++) {
+      for (let i = 0; i < documents.length; i++) {
         if (activeJob.cancelled) break;
 
-        const inv = invoices[i];
-        emit({ type: 'INVOICE_PROCESSING', shop: shopId, filename: inv.filename, current: i + 1, total: invoices.length });
+        const doc = documents[i];
+        emit({ type: 'INVOICE_PROCESSING', shop: shopId, filename: doc.filename, current: i + 1, total: documents.length });
 
         try {
           // 1. Lokaler Cache
-          if (await isLocalCached(inv.orderId)) {
-            emit({ type: 'INVOICE_SKIP', filename: inv.filename, reason: 'cache' });
+          if (await isLocalCached(doc.orderId)) {
+            emit({ type: 'INVOICE_SKIP', filename: doc.filename, reason: 'cache' });
             totalDuplicates++;
             continue;
           }
 
           // 2. Paperless-Duplikatprüfung (läuft im Offscreen → mTLS)
-          const exists = await paperless('CHECK_DUPLICATE', paperlessUrl, paperlessToken, { orderId: inv.orderId });
+          const exists = await paperless('CHECK_DUPLICATE', paperlessUrl, paperlessToken, { orderId: doc.orderId });
           if (exists) {
-            await addLocalCache(inv.orderId);
-            emit({ type: 'INVOICE_SKIP', filename: inv.filename, reason: 'paperless' });
+            await addLocalCache(doc.orderId);
+            emit({ type: 'INVOICE_SKIP', filename: doc.filename, reason: 'paperless' });
             totalDuplicates++;
             continue;
           }
 
           // 3. PDF vom Shop laden (Content Script im Tab → Session-Cookies)
-          const fetchResult = await sendToTab(tab.id, { action: 'FETCH_INVOICE', url: inv.invoiceUrl }, 45_000);
+          const fetchResult = await sendToTab(tab.id, { action: 'FETCH_DOCUMENT', url: doc.invoiceUrl }, 45_000);
           if (fetchResult.error) throw new Error(fetchResult.error);
           if (fetchResult.dataUrl.length < 500) throw new Error('PDF zu klein — kein gültiges Dokument.');
 
           // 4. Upload über Offscreen Document (mTLS)
           await paperless('UPLOAD_DOCUMENT', paperlessUrl, paperlessToken, {
             dataUrl:      fetchResult.dataUrl,
-            filename:     inv.filename,
+            filename:     doc.filename,
             tagIds:       shopTags[shopId] ?? [],
             customFields: shopCustomFields[shopId] ?? [],
           });
 
-          await addLocalCache(inv.orderId);
-          emit({ type: 'INVOICE_UPLOADED', filename: inv.filename });
+          await addLocalCache(doc.orderId);
+          emit({ type: 'INVOICE_UPLOADED', filename: doc.filename });
           totalUploaded++;
 
         } catch (err) {
-          emit({ type: 'INVOICE_ERROR', filename: inv.filename, message: err.message });
+          emit({ type: 'INVOICE_ERROR', filename: doc.filename, message: err.message });
           totalErrors++;
         }
 
@@ -202,7 +206,13 @@ async function startDownload(config) {
 
   activeJob = null;
   await closeOffscreen();
-  emit({ type: 'ALL_DONE', uploaded: totalUploaded, duplicates: totalDuplicates, errors: totalErrors });
+  emit({
+    type: 'ALL_DONE',
+    uploaded: totalUploaded,
+    duplicates: totalDuplicates,
+    errors: totalErrors,
+    discovered: totalDiscovered,
+  });
 }
 
 // ─── Shop-spezifische Navigationsfunktion für CSD-geschützte Seiten ──────────

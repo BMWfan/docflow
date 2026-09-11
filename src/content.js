@@ -15,10 +15,10 @@ if (!window.__invoiceFlowLoaded) {
       return false;
     }
 
-    if (message.action === 'GET_INVOICES') {
-      plugin
-        .getInvoices(message.dateFrom, message.dateTo)
-        .then(invoices => sendResponse({ success: true, invoices }))
+    if (message.action === 'GET_DOCUMENTS' || message.action === 'GET_INVOICES') {
+      const getter = plugin.getDocuments || plugin.getInvoices;
+      getter.call(plugin, message.dateFrom, message.dateTo)
+        .then(documents => sendResponse({ success: true, invoices: documents, documents }))
         .catch(err => sendResponse({ error: err.message }));
       return true;
     }
@@ -36,9 +36,9 @@ if (!window.__invoiceFlowLoaded) {
       return true;
     }
 
-    if (message.action === 'FETCH_INVOICE') {
-      plugin
-        .fetchInvoice(message.url)
+    if (message.action === 'FETCH_DOCUMENT' || message.action === 'FETCH_INVOICE') {
+      const fetcher = plugin.fetchDocument || plugin.fetchInvoice;
+      fetcher.call(plugin, message.url)
         .then(blob => {
           const reader = new FileReader();
           reader.onload = () =>

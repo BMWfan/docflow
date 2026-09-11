@@ -97,7 +97,7 @@ async function loadSettings() {
 elBtnStart.addEventListener('click', async () => {
   if (running) {
     await chrome.runtime.sendMessage({ action: 'CANCEL_DOWNLOAD' });
-    elBtnStart.textContent = 'Download starten';
+    elBtnStart.textContent = 'Dokumente abrufen';
     elBtnStart.classList.remove('cancel');
     running = false;
     return;
@@ -111,8 +111,7 @@ elBtnStart.addEventListener('click', async () => {
 
   const shops = Array.from(elShopsGrid.querySelectorAll('input:checked')).map(cb => cb.value);
   if (shops.length === 0) {
-    appendLog('error', '!', 'Mindestens einen Shop auswählen.');
-    return;
+    appendLog('error', '!', 'Mindestens eine Dokumentquelle auswählen.');    return;
   }
 
   const { dateFrom, dateTo } = getDateRange();
@@ -141,7 +140,7 @@ elBtnStart.addEventListener('click', async () => {
   progressPort.onMessage.addListener(handleProgress);
   progressPort.onDisconnect.addListener(() => {
     running = false;
-    elBtnStart.textContent = 'Download starten';
+    elBtnStart.textContent = 'Dokumente abrufen';
     elBtnStart.classList.remove('cancel');
   });
 
@@ -190,7 +189,7 @@ function handleProgress(msg) {
 
     case 'SHOP_INVOICES_FOUND':
       jobTotal += msg.count;
-      appendLog('info', '📋', `${shopLabel(msg.shop)}: ${msg.count} Rechnung(en) gefunden.`);
+      appendLog('info', '📋', `${shopLabel(msg.shop)}: ${msg.count} Dokument(e) gefunden.`);
       updateProgress();
       break;
 
@@ -226,6 +225,10 @@ function handleProgress(msg) {
       appendLog('ok', '✓', msg.message);
       break;
 
+    case 'DOCUMENT_DISCOVERED':
+      appendLog('info', '🗂', msg.message);
+      break;
+
     case 'SHOP_ERROR':
       appendLog('error', '✗', `${shopLabel(msg.shop)}: ${msg.message}`);
       break;
@@ -236,7 +239,7 @@ function handleProgress(msg) {
 
     case 'ALL_DONE':
       running = false;
-      elBtnStart.textContent = 'Download starten';
+      elBtnStart.textContent = 'Dokumente abrufen';
       elBtnStart.classList.remove('cancel');
       elCurrentItem.textContent = '';
       elProgressBar.style.width = '100%';
@@ -246,7 +249,7 @@ function handleProgress(msg) {
 
     case 'FATAL':
       running = false;
-      elBtnStart.textContent = 'Download starten';
+      elBtnStart.textContent = 'Dokumente abrufen';
       elBtnStart.classList.remove('cancel');
       appendLog('error', '✗', msg.message);
       if (progressPort) { progressPort.disconnect(); progressPort = null; }
@@ -274,11 +277,11 @@ function updateProgress() {
   }
 }
 
-function showSummary({ uploaded, duplicates, errors }) {
+function showSummary({ uploaded, duplicates, errors, discovered }) {
   elSummary.classList.add('visible');
   elSummary.innerHTML = `
-    <strong>Fertig!</strong>
-    <span>✓ ${uploaded} hochgeladen &nbsp;·&nbsp; ⟳ ${duplicates} übersprungen &nbsp;·&nbsp; ✗ ${errors} Fehler</span>
+    <strong>Dokumentanalyse abgeschlossen</strong>
+    <span>🗂 ${discovered || 0} erkannt &nbsp;·&nbsp; ✓ ${uploaded} archiviert &nbsp;·&nbsp; ⟳ ${duplicates} übersprungen &nbsp;·&nbsp; ✗ ${errors} Fehler</span>
   `;
 }
 
@@ -289,6 +292,7 @@ const SHOP_LABELS = {
   googleads: 'Google Ads', googlepay: 'Google Pay',
   linkedin: 'LinkedIn', metaads: 'Meta Ads', microsoft365: 'Microsoft 365',
   openaiapi: 'OpenAI API', paypal: 'PayPal', revolut: 'Revolut',
+  sapfiori: 'SAP Fiori / HR',
 };
 function shopLabel(id) { return SHOP_LABELS[id] || id; }
 
