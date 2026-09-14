@@ -16,6 +16,7 @@ const elSapPath    = $('sapServicePath');
 const elSapClient  = $('sapClient');
 const elBtnSapPerm = $('btnSapPermission');
 const elSapStatus  = $('sapStatus');
+const elDebug      = $('debugLogging');
 
 const SHOP_IDS = [
   'amazon', 'ebay', 'zalando', 'mediamarkt', 'otto',
@@ -45,7 +46,7 @@ async function load() {
     'paperlessUrl', 'paperlessToken',
     'defaultDateRange', 'customFrom', 'customTo',
     'enabledShops', 'shopTags', 'tagIds', 'shopCustomFields',
-    'shopDocumentTypes', 'shopCorrespondents', 'sapConfig',
+    'shopDocumentTypes', 'shopCorrespondents', 'sapConfig', 'debugLogging',
   ]);
 
   elUrl.value   = s.paperlessUrl   || '';
@@ -58,6 +59,8 @@ async function load() {
 
   elFrom.value = s.customFrom || '';
   elTo.value   = s.customTo   || '';
+
+  if (elDebug) elDebug.checked = Boolean(s.debugLogging);
 
   if (elSapUrl) {
     elSapUrl.value    = s.sapConfig?.startUrl    || '';
@@ -285,6 +288,7 @@ elBtnSave.addEventListener('click', async () => {
     shopDocumentTypes:  getShopDocumentTypes(),
     shopCorrespondents: getShopCorrespondents(),
     sapConfig,
+    debugLogging:       Boolean(elDebug?.checked),
   });
 
   // Content-Script-Registrierung im Background aktualisieren

@@ -213,3 +213,26 @@ test('isLoginRedirect recognises SAP SAML and logon pages', () => {
   assert.equal(sb.isLoginRedirect('https://idp.example.com/saml2/sso'), true);
   assert.equal(sb.isLoginRedirect('https://sap.example.com/sap/bc/ui2/flp?sap-client=100#ZXSSFORMVIEWER-display'), false);
 });
+
+test('no InvoiceFlow branding remains in shipped sources', () => {
+  const fs = readSource;
+  for (const rel of ['src/background.js', 'src/popup.js', 'src/options.js', 'src/offscreen.js', 'src/paperless.js', 'src/plugins/amazon.js', 'offscreen.html', 'popup.html', 'options.html']) {
+    assert.doesNotMatch(fs(rel), /InvoiceFlow|invoiceflow/, rel);
+  }
+  // content.js keeps exactly one mention: the legacy plugin-global fallback
+  const content = fs('src/content.js');
+  assert.equal((content.match(/InvoiceFlow/g) || []).length, 1);
+  assert.match(content, /window\.DocFlowPlugin \?\? window\.InvoiceFlowPlugin/);
+});
+
+test('amazon plugin logs the pathname, never the full URL', () => {
+  const src = readSource('src/plugins/amazon.js');
+  const logLines = src.split('\n').filter(l => /console\.(log|warn|error|debug)/.test(l));
+  assert.ok(logLines.length > 0);
+  for (const l of logLines) assert.doesNotMatch(l, /location\.href/, l.trim());
+});
+
+test('background forwards the global debugLogging flag to the SAP plugin config', () => {
+  const bg = readSource('src/background.js');
+  assert.match(bg, /debug: Boolean\(debugLogging\)/);
+});

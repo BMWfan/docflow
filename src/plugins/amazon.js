@@ -330,15 +330,15 @@ window.DocFlowPlugin = (() => {
         const check = () => {
           const cards = document.querySelectorAll(_SELECTORS.orderCard);
           if (cards.length > 0) {
-            console.log(`[InvoiceFlow] CSD fertig — ${cards.length} Karte(n) auf ${window.location.href}`);
+            console.log(`[DocFlow] CSD fertig — ${cards.length} Karte(n) auf ${window.location.pathname}`);
             return resolve();
           }
           if (noOrdersSelectors.some(s => document.querySelector(s))) {
-            console.log(`[InvoiceFlow] Keine Bestellungen auf ${window.location.href}`);
+            console.log(`[DocFlow] Keine Bestellungen auf ${window.location.pathname}`);
             return resolve();
           }
           if (Date.now() >= deadline) {
-            console.warn(`[InvoiceFlow] CSD-Timeout auf ${window.location.href}`);
+            console.warn(`[DocFlow] CSD-Timeout auf ${window.location.pathname}`);
             return resolve();
           }
           setTimeout(check, 400);

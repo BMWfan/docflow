@@ -170,6 +170,7 @@ async function startDownload(config) {
     shopTags = {}, shopCustomFields = {},
     shopDocumentTypes = {}, shopCorrespondents = {},
     sapConfig = null,
+    debugLogging = false,
   } = config;
 
   await ensureOffscreen();
@@ -197,7 +198,9 @@ async function startDownload(config) {
     emit({ type: 'SHOP_START', shop: shopId });
 
     // Quellenspezifische Konfiguration, die an das Plugin durchgereicht wird
-    const sourceConfig = shopId === 'sapfiori' ? (sapConfig ?? undefined) : undefined;
+    const sourceConfig = shopId === 'sapfiori'
+      ? { ...(sapConfig ?? {}), debug: Boolean(debugLogging) }
+      : undefined;
 
     let tab;
     try {
