@@ -106,6 +106,7 @@ elBtnStart.addEventListener('click', async () => {
   const s = await chrome.storage.sync.get([
     'paperlessUrl', 'paperlessToken',
     'shopTags', 'shopCustomFields', 'shopDocumentTypes', 'shopCorrespondents',
+    'sapConfig',
   ]);
   if (!s.paperlessUrl || !s.paperlessToken) {
     chrome.runtime.openOptionsPage();
@@ -159,6 +160,7 @@ elBtnStart.addEventListener('click', async () => {
       shopCustomFields:   s.shopCustomFields || {},
       shopDocumentTypes:  s.shopDocumentTypes || {},
       shopCorrespondents: s.shopCorrespondents || {},
+      sapConfig:          s.sapConfig || null,
     },
   });
 });

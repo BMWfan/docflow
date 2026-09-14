@@ -16,8 +16,21 @@ window.DocFlowPlugin = (() => {
     'attachment',
     'pdf',
   ];
-  const SERVICE_ROOT = '/sap/opu/odata/kwp/XSS_PDF_VIEWER_SRV';
+  const DEFAULT_SERVICE_PATH = '/sap/opu/odata/kwp/XSS_PDF_VIEWER_SRV';
   const DEFAULT_VIEW_ID = '2PAYSTUB';
+
+  // Wird pro getDocuments()-Aufruf aus sourceConfig (Einstellungen) gesetzt
+  let SERVICE_ROOT = DEFAULT_SERVICE_PATH;
+
+  function resolveConfig(sourceConfig) {
+    const cfg = sourceConfig && typeof sourceConfig === 'object' ? sourceConfig : {};
+    const servicePath = String(cfg.servicePath || '').trim().replace(/\/+$/, '');
+    return {
+      servicePath: servicePath || DEFAULT_SERVICE_PATH,
+      client:      String(cfg.client || '').trim(),
+      debug:       Boolean(cfg.debug),
+    };
+  }
 
   function formatDate(date) {
     return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
@@ -149,9 +162,11 @@ window.DocFlowPlugin = (() => {
 
   return {
     name: 'SAP Fiori',
-    domains: ['saphsp.corp365.de'],
 
-    async getDocuments(dateFrom, dateTo) {
+    async getDocuments(dateFrom, dateTo, sourceConfig) {
+      const cfg = resolveConfig(sourceConfig);
+      SERVICE_ROOT = cfg.servicePath;
+
       const from = new Date(dateFrom);
       const to = new Date(dateTo);
       to.setHours(23, 59, 59, 999);

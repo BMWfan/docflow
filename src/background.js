@@ -25,11 +25,71 @@ const SHOP_START_URL = {
   openaiapi:    'https://platform.openai.com/settings/organization/billing/history',
   paypal:       'https://www.paypal.com/reports/accountStatements',
   revolut:      'https://business.revolut.com/billing',
-  sapfiori:     'https://saphsp.corp365.de/sap/bc/ui2/flp?sap-client=100&sap-ushell-config=headerless&sap-language=DE#ZXSSFORMVIEWER-display&/Categories?tab=2PAYSTUB',
+  // sapfiori: Start-URL kommt aus den Einstellungen (sapConfig.startUrl)
 };
 
 // Shops mit Amazon-CSD-Problem: Tab-Navigation statt internes fetch()
 const SHOPS_USE_PAGE_NAVIGATION = new Set(['amazon']);
+
+// ─── SAP / Fiori: konfigurierbarer Host ──────────────────────────────────────
+// Der SAP-Host ist nicht im Manifest hinterlegt. Der Nutzer trägt die Fiori-
+// Start-URL in den Einstellungen ein; daraus wird der Origin abgeleitet, die
+// optionale Host-Permission angefordert und das Content Script dynamisch
+// registriert (chrome.scripting.registerContentScripts).
+
+const SAP_SCRIPT_ID = 'docflow-sapfiori';
+
+function sapOrigin(startUrl) {
+  try {
+    const u = new URL(String(startUrl || ''));
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
+
+function sapMatchPattern(startUrl) {
+  const origin = sapOrigin(startUrl);
+  return origin ? `${origin}/*` : null;
+}
+
+function resolveStartUrl(shopId, config) {
+  if (shopId === 'sapfiori') return sapOrigin(config?.sapConfig?.startUrl) ? config.sapConfig.startUrl : null;
+  return SHOP_START_URL[shopId] ?? null;
+}
+
+/**
+ * Registriert das SAP-Content-Script für den konfigurierten Host neu.
+ * Liefert true, wenn eine Registrierung aktiv ist, sonst false
+ * (keine/ungültige Start-URL oder fehlende Host-Permission).
+ */
+async function ensureSapContentScript(sapConfig) {
+  await chrome.scripting.unregisterContentScripts({ ids: [SAP_SCRIPT_ID] }).catch(() => {});
+
+  const pattern = sapMatchPattern(sapConfig?.startUrl);
+  if (!pattern) return false;
+
+  const allowed = await chrome.permissions.contains({ origins: [pattern] }).catch(() => false);
+  if (!allowed) return false;
+
+  await chrome.scripting.registerContentScripts([{
+    id:                   SAP_SCRIPT_ID,
+    js:                   ['src/content.js', 'src/plugins/sapfiori.js'],
+    matches:              [pattern],
+    runAt:                'document_idle',
+    persistAcrossSessions: true,
+  }]);
+  return true;
+}
+
+// Dynamische Registrierungen überleben Browser-Neustarts, aber nicht
+// Extension-Updates/Reloads → beim Installieren/Aktualisieren erneuern.
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.storage.sync.get('sapConfig')
+    .then(({ sapConfig }) => ensureSapContentScript(sapConfig))
+    .catch(() => {});
+});
 
 // ─── Messaging ────────────────────────────────────────────────────────────────
 
@@ -54,6 +114,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.action === 'GET_STATUS') {
     sendResponse({ running: !!activeJob });
     return false;
+  }
+  if (msg.action === 'SAP_CONFIG_UPDATED') {
+    ensureSapContentScript(msg.sapConfig)
+      .then(ok => sendResponse({ success: ok }))
+      .catch(err => sendResponse({ error: err.message }));
+    return true;
   }
 });
 
@@ -103,6 +169,7 @@ async function startDownload(config) {
     shops, dateFrom, dateTo, paperlessUrl, paperlessToken,
     shopTags = {}, shopCustomFields = {},
     shopDocumentTypes = {}, shopCorrespondents = {},
+    sapConfig = null,
   } = config;
 
   await ensureOffscreen();
@@ -126,15 +193,27 @@ async function startDownload(config) {
 
   for (const shopId of shops) {
     if (activeJob.cancelled) break;
-    if (!SHOP_START_URL[shopId]) continue;
 
     emit({ type: 'SHOP_START', shop: shopId });
 
+    // Quellenspezifische Konfiguration, die an das Plugin durchgereicht wird
+    const sourceConfig = shopId === 'sapfiori' ? (sapConfig ?? undefined) : undefined;
+
     let tab;
     try {
-      tab = await openTab(SHOP_START_URL[shopId]);
+      const startUrl = resolveStartUrl(shopId, config);
+      if (!startUrl) {
+        throw new Error(shopId === 'sapfiori'
+          ? 'SAP-Start-URL nicht konfiguriert — siehe Einstellungen.'
+          : `Keine Start-URL für ${shopId}.`);
+      }
+      if (shopId === 'sapfiori' && !(await ensureSapContentScript(sapConfig))) {
+        throw new Error('Zugriff auf den SAP-Host fehlt — in den Einstellungen "Zugriff erlauben" klicken.');
+      }
+
+      tab = await openTab(startUrl);
       await waitForTabLoad(tab.id);
-      await waitForLoginIfNeeded(tab.id, shopId, SHOP_START_URL[shopId]);
+      await waitForLoginIfNeeded(tab.id, shopId, startUrl);
       await sleep(1200);
 
       emit({ type: 'SHOP_STATUS', shop: shopId, message: 'Analysiere Dokumentquellen…' });
@@ -143,7 +222,7 @@ async function startDownload(config) {
       if (SHOPS_USE_PAGE_NAVIGATION.has(shopId)) {
         documents = await collectDocumentsViaNavigation(tab.id, shopId, dateFrom, dateTo);
       } else {
-        const listResult = await sendToTab(tab.id, { action: 'GET_DOCUMENTS', dateFrom, dateTo }, 120_000);
+        const listResult = await sendToTab(tab.id, { action: 'GET_DOCUMENTS', dateFrom, dateTo, sourceConfig }, 120_000);
         if (listResult.error) throw new Error(listResult.error);
         documents = listResult.documents ?? listResult.invoices ?? [];
       }
@@ -175,7 +254,7 @@ async function startDownload(config) {
           }
 
           // 3. PDF vom Shop laden (Content Script im Tab → Session-Cookies)
-          const fetchResult = await sendToTab(tab.id, { action: 'FETCH_DOCUMENT', url: doc.documentUrl ?? doc.invoiceUrl }, 45_000);
+          const fetchResult = await sendToTab(tab.id, { action: 'FETCH_DOCUMENT', url: doc.documentUrl ?? doc.invoiceUrl, sourceConfig }, 45_000);
           if (fetchResult.error) throw new Error(fetchResult.error);
           if (!fetchResult.dataUrl || fetchResult.dataUrl.length < 500) throw new Error('PDF zu klein — kein gültiges Dokument.');
           if (isHtmlResult(fetchResult)) throw new Error('Kein PDF erhalten (HTML) — Session abgelaufen?');

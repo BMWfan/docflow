@@ -40,8 +40,7 @@
     "*://admin.microsoft.com/*",
     "*://admin.cloud.microsoft/*",
     "*://www.paypal.com/*",
-    "*://business.revolut.com/*",
-    "*://saphsp.corp365.de/*"
+    "*://business.revolut.com/*"
   ],
 
   "background": {
@@ -152,11 +151,6 @@
     {
       "matches": ["*://business.revolut.com/*"],
       "js": ["src/content.js", "src/plugins/revolut.js"],
-      "run_at": "document_idle"
-    },
-    {
-      "matches": ["*://saphsp.corp365.de/*"],
-      "js": ["src/content.js", "src/plugins/sapfiori.js"],
       "run_at": "document_idle"
     }
   ]

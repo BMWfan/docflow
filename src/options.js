@@ -11,6 +11,11 @@ const elSaveMsg = $('saveMsg');
 const elCustom  = $('customRangeFields');
 const elFrom    = $('customFrom');
 const elTo      = $('customTo');
+const elSapUrl     = $('sapStartUrl');
+const elSapPath    = $('sapServicePath');
+const elSapClient  = $('sapClient');
+const elBtnSapPerm = $('btnSapPermission');
+const elSapStatus  = $('sapStatus');
 
 const SHOP_IDS = [
   'amazon', 'ebay', 'zalando', 'mediamarkt', 'otto',
@@ -40,7 +45,7 @@ async function load() {
     'paperlessUrl', 'paperlessToken',
     'defaultDateRange', 'customFrom', 'customTo',
     'enabledShops', 'shopTags', 'tagIds', 'shopCustomFields',
-    'shopDocumentTypes', 'shopCorrespondents',
+    'shopDocumentTypes', 'shopCorrespondents', 'sapConfig',
   ]);
 
   elUrl.value   = s.paperlessUrl   || '';
@@ -53,6 +58,13 @@ async function load() {
 
   elFrom.value = s.customFrom || '';
   elTo.value   = s.customTo   || '';
+
+  if (elSapUrl) {
+    elSapUrl.value    = s.sapConfig?.startUrl    || '';
+    elSapPath.value   = s.sapConfig?.servicePath || '';
+    elSapClient.value = s.sapConfig?.client      || '';
+    if (s.sapConfig?.startUrl) refreshSapStatus(s.sapConfig.startUrl);
+  }
 
   const enabled = s.enabledShops || { amazon: true, ebay: true };
   for (const id of SHOP_IDS) {
@@ -244,6 +256,16 @@ elBtnSave.addEventListener('click', async () => {
     }
   }
 
+  // SAP-Konfiguration validieren (leer = SAP-Quelle deaktiviert)
+  let sapConfig = null;
+  if (elSapUrl && elSapUrl.value.trim()) {
+    sapConfig = readSapConfig();
+    if (!sapConfig) {
+      showSaveMsg('error', 'SAP-Start-URL ist keine gültige http(s)-URL.');
+      return;
+    }
+  }
+
   const range       = document.querySelector('input[name="dateRange"]:checked')?.value || 'currentYear';
   const enabledShops = {};
   for (const id of SHOP_IDS) {
@@ -262,10 +284,86 @@ elBtnSave.addEventListener('click', async () => {
     shopCustomFields:   getShopCustomFields(),
     shopDocumentTypes:  getShopDocumentTypes(),
     shopCorrespondents: getShopCorrespondents(),
+    sapConfig,
   });
 
-  showSaveMsg('ok', 'Gespeichert.');
-  setTimeout(() => { elSaveMsg.textContent = ''; }, 3000);
+  // Content-Script-Registrierung im Background aktualisieren
+  let sapNote = '';
+  if (sapConfig) {
+    const ok = await notifySapConfig(sapConfig);
+    if (!ok) sapNote = ' SAP: Host-Zugriff fehlt noch — bitte „Zugriff erlauben" klicken.';
+    refreshSapStatus(sapConfig.startUrl);
+  } else {
+    await notifySapConfig(null);
+  }
+
+  showSaveMsg(sapNote ? 'error' : 'ok', 'Gespeichert.' + sapNote);
+  setTimeout(() => { elSaveMsg.textContent = ''; }, sapNote ? 8000 : 3000);
+});
+
+// ─── SAP / Fiori ──────────────────────────────────────────────────────────────
+
+function readSapConfig() {
+  const startUrl = elSapUrl?.value.trim() || '';
+  if (!startUrl) return null;
+  try {
+    const u = new URL(startUrl);
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  } catch {
+    return null;
+  }
+  return {
+    startUrl,
+    servicePath: (elSapPath?.value.trim() || '').replace(/\/+$/, ''),
+    client:      elSapClient?.value.trim() || '',
+  };
+}
+
+async function notifySapConfig(sapConfig) {
+  try {
+    const res = await chrome.runtime.sendMessage({ action: 'SAP_CONFIG_UPDATED', sapConfig });
+    return Boolean(res?.success);
+  } catch {
+    return false;
+  }
+}
+
+function showSapStatus(type, text) {
+  if (!elSapStatus) return;
+  elSapStatus.style.display = 'inline-flex';
+  elSapStatus.className = `connection-status status-${type}`;
+  elSapStatus.textContent = text;
+}
+
+async function refreshSapStatus(url) {
+  const ok = await hasHostPermission(url);
+  showSapStatus(ok ? 'ok' : 'error', ok ? 'Zugriff erteilt' : 'Zugriff fehlt');
+}
+
+// Eigener Button: chrome.permissions.request() braucht eine User-Geste, und
+// ein zweiter Dialog im selben Save-Klick (nach dem Paperless-Dialog) verliert
+// die Aktivierung. Hier: Permission holen → Registrierung im Background anstoßen.
+elBtnSapPerm?.addEventListener('click', async () => {
+  const cfg = readSapConfig();
+  if (!cfg) {
+    showSapStatus('error', 'Bitte zuerst eine gültige Start-URL eingeben.');
+    return;
+  }
+  elBtnSapPerm.disabled = true;
+  try {
+    const already = await hasHostPermission(cfg.startUrl);
+    const granted = already || await requestHostPermission(cfg.startUrl);
+    if (!granted) {
+      showSapStatus('error', 'Zugriff verweigert.');
+      return;
+    }
+    // Nur registrieren, wenn die Konfiguration auch gespeichert wurde/wird
+    await chrome.storage.sync.set({ sapConfig: cfg });
+    const ok = await notifySapConfig(cfg);
+    showSapStatus(ok ? 'ok' : 'error', ok ? 'Zugriff erteilt — SAP-Plugin aktiv' : 'Registrierung fehlgeschlagen');
+  } finally {
+    elBtnSapPerm.disabled = false;
+  }
 });
 
 function getShopTagIds() {

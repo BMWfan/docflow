@@ -37,13 +37,18 @@ test('isLoginRedirect accepts normal shop URLs', () => {
   }
 });
 
-test('SHOP_START_URL has an entry for every source selectable in the popup', () => {
+test('SHOP_START_URL has an entry for every popup source except the configurable SAP source', () => {
   const sb = loadBackground();
   const startUrls = evalIn(sb, 'SHOP_START_URL');
   const popup = readSource('popup.html');
   const ids = [...popup.matchAll(/<input type="checkbox" value="([a-z0-9]+)"[^>]*>/g)].map(m => m[1]);
   assert.ok(ids.length >= 17, `expected popup sources, got ${ids.length}`);
+  assert.ok(ids.includes('sapfiori'));
   for (const id of ids) {
+    if (id === 'sapfiori') {
+      assert.equal(startUrls[id], undefined, 'sapfiori start URL must come from settings');
+      continue;
+    }
     assert.ok(typeof startUrls[id] === 'string' && startUrls[id].startsWith('https://'), `missing start URL for ${id}`);
   }
 });
@@ -104,4 +109,100 @@ test('isHtmlResult flags HTML responses by mime type or data URL', () => {
   assert.equal(sb.isHtmlResult({ mimeType: '', dataUrl: 'data:text/html;base64,x' }), true);
   assert.equal(sb.isHtmlResult({ mimeType: 'application/pdf', dataUrl: 'data:application/pdf;base64,x' }), false);
   assert.equal(sb.isHtmlResult({ mimeType: 'application/octet-stream', dataUrl: 'data:application/octet-stream;base64,x' }), false);
+});
+
+// ─── SAP host configuration ──────────────────────────────────────────────────
+
+test('sapMatchPattern derives origin/* including port and rejects non-http URLs', () => {
+  const sb = loadBackground();
+  assert.equal(sb.sapMatchPattern('https://sap.example.com/sap/bc/ui2/flp?sap-client=100#X-display'), 'https://sap.example.com/*');
+  assert.equal(sb.sapMatchPattern('http://sap.local:8443/x'), 'http://sap.local:8443/*');
+  assert.equal(sb.sapMatchPattern('ftp://sap.example.com/'), null);
+  assert.equal(sb.sapMatchPattern('not a url'), null);
+  assert.equal(sb.sapMatchPattern(''), null);
+  assert.equal(sb.sapMatchPattern(undefined), null);
+});
+
+test('resolveStartUrl uses sapConfig for sapfiori and the static table otherwise', () => {
+  const sb = loadBackground();
+  assert.equal(sb.resolveStartUrl('amazon', {}), 'https://www.amazon.de/gp/css/order-history');
+  assert.equal(sb.resolveStartUrl('sapfiori', {}), null);
+  assert.equal(sb.resolveStartUrl('sapfiori', { sapConfig: { startUrl: 'https://sap.example.com/flp#A' } }), 'https://sap.example.com/flp#A');
+  assert.equal(sb.resolveStartUrl('sapfiori', { sapConfig: { startUrl: 'garbage' } }), null);
+  assert.equal(sb.resolveStartUrl('unknown', {}), null);
+});
+
+test('ensureSapContentScript unregisters then registers with matches [origin/*] and both scripts', async () => {
+  const sb = loadBackground();
+  const ok = await sb.ensureSapContentScript({ startUrl: 'https://sap.example.com/sap/bc/ui2/flp#X' });
+  assert.equal(ok, true);
+  const names = sb.chrome.calls.map(c => c.name).filter(n => n.startsWith('scripting.') || n.startsWith('permissions.'));
+  assert.deepEqual(names, ['scripting.unregisterContentScripts', 'permissions.contains', 'scripting.registerContentScripts']);
+  assert.equal(sb.chrome.registered.length, 1);
+  const reg = plain(sb.chrome.registered[0]);
+  assert.equal(reg.id, 'docflow-sapfiori');
+  assert.deepEqual(reg.matches, ['https://sap.example.com/*']);
+  assert.deepEqual(reg.js, ['src/content.js', 'src/plugins/sapfiori.js']);
+  assert.equal(reg.runAt, 'document_idle');
+  assert.equal(reg.persistAcrossSessions, true);
+});
+
+test('ensureSapContentScript returns false without host permission and registers nothing', async () => {
+  const sb = loadBackground();
+  sb.chrome.permissionsGranted = false;
+  const ok = await sb.ensureSapContentScript({ startUrl: 'https://sap.example.com/x' });
+  assert.equal(ok, false);
+  assert.equal(sb.chrome.registered.length, 0);
+});
+
+test('ensureSapContentScript returns false for missing config and clears an old registration', async () => {
+  const sb = loadBackground();
+  await sb.ensureSapContentScript({ startUrl: 'https://old.example.com/x' });
+  assert.equal(sb.chrome.registered.length, 1);
+  const ok = await sb.ensureSapContentScript(null);
+  assert.equal(ok, false);
+  assert.equal(sb.chrome.registered.length, 0, 'old host registration must be removed');
+});
+
+test('changing the host replaces the previous registration', async () => {
+  const sb = loadBackground();
+  await sb.ensureSapContentScript({ startUrl: 'https://old.example.com/x' });
+  await sb.ensureSapContentScript({ startUrl: 'https://new.example.com/y' });
+  assert.equal(sb.chrome.registered.length, 1);
+  assert.deepEqual(plain(sb.chrome.registered[0].matches), ['https://new.example.com/*']);
+});
+
+test('SAP_CONFIG_UPDATED message triggers registration and responds {success:true}', async () => {
+  const sb = loadBackground();
+  const listener = sb.chrome.listeners.onMessage[0];
+  const response = await new Promise(resolve => {
+    const ret = listener({ action: 'SAP_CONFIG_UPDATED', sapConfig: { startUrl: 'https://sap.example.com/x' } }, {}, resolve);
+    assert.equal(ret, true, 'must keep the channel open for the async response');
+  });
+  assert.deepEqual(plain(response), { success: true });
+  assert.equal(sb.chrome.registered.length, 1);
+});
+
+test('onInstalled re-registers the SAP script from stored config', async () => {
+  const sb = loadBackground();
+  assert.equal(sb.chrome.listeners.onInstalled.length, 1);
+  sb.chrome.storage.sync._store.sapConfig = { startUrl: 'https://sap.example.com/x' };
+  sb.chrome.listeners.onInstalled[0]({ reason: 'update' });
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(sb.chrome.registered.length, 1);
+});
+
+test('manifest no longer hardcodes an SAP host', () => {
+  const manifest = JSON.parse(readSource('manifest.json'));
+  const all = JSON.stringify(manifest);
+  assert.doesNotMatch(all, /saphsp|corp365/);
+  assert.ok(!manifest.content_scripts.some(cs => cs.js.includes('src/plugins/sapfiori.js')), 'sapfiori must be registered dynamically');
+  assert.ok(manifest.permissions.includes('scripting'));
+  assert.ok(manifest.optional_host_permissions.includes('https://*/*'));
+});
+
+test('background passes sourceConfig with GET_DOCUMENTS and FETCH_DOCUMENT', () => {
+  const bg = readSource('src/background.js');
+  assert.match(bg, /action: 'GET_DOCUMENTS', dateFrom, dateTo, sourceConfig/);
+  assert.match(bg, /action: 'FETCH_DOCUMENT', url: doc\.documentUrl \?\? doc\.invoiceUrl, sourceConfig/);
 });

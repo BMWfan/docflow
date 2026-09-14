@@ -307,6 +307,34 @@ mbe<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- SAP / Fiori -->
+  <div class="card">
+    <h2>SAP / Fiori</h2>
+    <p style="font-size:12px;color:#64748b;margin-bottom:12px;">
+      URL der Fiori-App (z.&nbsp;B. Gehaltsabrechnungen) aus der Adresszeile einfügen. Der Host wird daraus abgeleitet;
+      DocFlow fragt einmalig den Zugriff auf diesen Host an und lädt das SAP-Plugin dort automatisch.
+    </p>
+
+    <div class="field">
+      <label for="sapStartUrl">Start-URL der Fiori-App</label>
+      <div class="input-row">
+        <input type="url" id="sapStartUrl" placeholder="https://sap.example.com/sap/bc/ui2/flp?sap-client=100#ZXSSFORMVIEWER-display&amp;/Categories?tab=2PAYSTUB">
+        <button class="btn btn-secondary" id="btnSapPermission">Zugriff erlauben</button>
+        <span id="sapStatus" style="display:none" class="connection-status"></span>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="sapServicePath">OData-Service-Pfad <span style="font-weight:400;color:#94a3b8;">(optional — wird sonst über den Gateway-Katalog ermittelt)</span></label>
+      <input type="text" id="sapServicePath" placeholder="/sap/opu/odata/kwp/XSS_PDF_VIEWER_SRV">
+    </div>
+
+    <div class="field">
+      <label for="sapClient">SAP-Mandant <span style="font-weight:400;color:#94a3b8;">(optional)</span></label>
+      <input type="text" id="sapClient" placeholder="100" style="max-width:120px;">
+    </div>
+  </div>
+
   <!-- Standard-Zeitraum -->
   <div class="card">
     <h2>Standard-Zeitraum</h2>
