@@ -29,7 +29,9 @@ const SHOP_LABELS = {
   sapfiori: 'SAP Fiori / HR',
 };
 
-let _allCustomFields = [];
+let _allCustomFields   = [];
+let _allDocumentTypes  = [];
+let _allCorrespondents = [];
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
@@ -38,6 +40,7 @@ async function load() {
     'paperlessUrl', 'paperlessToken',
     'defaultDateRange', 'customFrom', 'customTo',
     'enabledShops', 'shopTags', 'tagIds', 'shopCustomFields',
+    'shopDocumentTypes', 'shopCorrespondents',
   ]);
 
   elUrl.value   = s.paperlessUrl   || '';
@@ -66,10 +69,12 @@ async function load() {
 
   // Render custom fields section (initially empty fields list)
   renderCustomFieldsSection(s.shopCustomFields || {});
+  renderMetaSection(s.shopDocumentTypes || {}, s.shopCorrespondents || {});
 
   if (s.paperlessUrl && s.paperlessToken) {
     await loadAllTags(s.paperlessUrl, s.paperlessToken, shopTags);
     await loadAllCustomFields(s.paperlessUrl, s.paperlessToken, s.shopCustomFields || {});
+    await loadAllMeta(s.paperlessUrl, s.paperlessToken, s.shopDocumentTypes || {}, s.shopCorrespondents || {});
   }
 }
 
@@ -204,6 +209,7 @@ elBtnTest.addEventListener('click', async () => {
     showStatus('ok', 'Verbindung OK');
     await loadAllTags(url, token, getShopTagIds());
     await loadAllCustomFields(url, token, getShopCustomFields());
+    await loadAllMeta(url, token, getShopDocumentTypes(), getShopCorrespondents());
   } catch (e) {
     showStatus('error', e.message);
   } finally {
@@ -252,8 +258,10 @@ elBtnSave.addEventListener('click', async () => {
     customFrom:        elFrom.value,
     customTo:          elTo.value,
     enabledShops,
-    shopTags:          getShopTagIds(),
-    shopCustomFields:  getShopCustomFields(),
+    shopTags:           getShopTagIds(),
+    shopCustomFields:   getShopCustomFields(),
+    shopDocumentTypes:  getShopDocumentTypes(),
+    shopCorrespondents: getShopCorrespondents(),
   });
 
   showSaveMsg('ok', 'Gespeichert.');
@@ -448,6 +456,101 @@ function getShopCustomFields() {
   }
   return result;
 }
+
+// ─── Dokumenttyp & Korrespondent ──────────────────────────────────────────────
+
+async function _fetchPaperlessList(baseUrl, token, apiPath) {
+  const url = baseUrl.replace(/\/+$/, '') + apiPath;
+  const res = await fetch(url, { headers: { Authorization: `Token ${token}`, Accept: 'application/json' }, credentials: 'include' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  return data.results || [];
+}
+
+async function loadAllMeta(baseUrl, token, savedTypes, savedCorrs) {
+  try {
+    _allDocumentTypes = await _fetchPaperlessList(baseUrl, token, '/api/document_types/?page_size=500');
+  } catch (e) {
+    console.warn('Dokumenttypen konnten nicht geladen werden:', e.message);
+    _allDocumentTypes = [];
+  }
+  try {
+    _allCorrespondents = await _fetchPaperlessList(baseUrl, token, '/api/correspondents/?page_size=500');
+  } catch (e) {
+    console.warn('Korrespondenten konnten nicht geladen werden:', e.message);
+    _allCorrespondents = [];
+  }
+  renderMetaSection(savedTypes, savedCorrs);
+}
+
+function _buildMetaSelect(id, items, selectedId, emptyLabel) {
+  const sel = document.createElement('select');
+  sel.id = id;
+  sel.className = 'meta-select';
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = emptyLabel;
+  sel.appendChild(none);
+  for (const item of items) {
+    const opt = document.createElement('option');
+    opt.value = String(item.id);
+    opt.textContent = item.name;
+    if (selectedId != null && Number(selectedId) === item.id) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  // Gespeicherten Wert behalten, auch wenn die Liste (noch) nicht geladen ist
+  if (selectedId != null && !items.some(i => i.id === Number(selectedId))) {
+    const keep = document.createElement('option');
+    keep.value = String(selectedId);
+    keep.textContent = `#${selectedId}`;
+    keep.selected = true;
+    sel.appendChild(keep);
+  }
+  return sel;
+}
+
+function renderMetaSection(savedTypes, savedCorrs) {
+  const container = document.getElementById('shopMetaList');
+  if (!container) return;
+  container.innerHTML = '';
+
+  for (const shopId of SHOP_IDS) {
+    const row = document.createElement('div');
+    row.className = 'meta-row';
+
+    const label = document.createElement('span');
+    label.className = 'shop-tag-label';
+    label.textContent = SHOP_LABELS[shopId] || shopId;
+
+    const typeCap = document.createElement('span');
+    typeCap.className = 'meta-caption';
+    typeCap.textContent = 'Typ';
+
+    const corrCap = document.createElement('span');
+    corrCap.className = 'meta-caption';
+    corrCap.textContent = 'Korrespondent';
+
+    row.appendChild(label);
+    row.appendChild(typeCap);
+    row.appendChild(_buildMetaSelect(`doctype-${shopId}`, _allDocumentTypes, savedTypes?.[shopId], '— kein Dokumenttyp —'));
+    row.appendChild(corrCap);
+    row.appendChild(_buildMetaSelect(`correspondent-${shopId}`, _allCorrespondents, savedCorrs?.[shopId], '— kein Korrespondent —'));
+    container.appendChild(row);
+  }
+}
+
+function _readMetaSelects(prefix) {
+  const result = {};
+  for (const shopId of SHOP_IDS) {
+    const sel = document.getElementById(`${prefix}-${shopId}`);
+    const n   = sel ? Number(sel.value) : NaN;
+    result[shopId] = Number.isInteger(n) && n > 0 ? n : null;
+  }
+  return result;
+}
+
+function getShopDocumentTypes()  { return _readMetaSelects('doctype'); }
+function getShopCorrespondents() { return _readMetaSelects('correspondent'); }
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 

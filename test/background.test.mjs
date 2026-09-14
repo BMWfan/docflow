@@ -77,3 +77,31 @@ test('background sends GET_DOCUMENTS_PAGE and accepts legacy invoiceUrl', () => 
   assert.doesNotMatch(bg, /GET_INVOICES_PAGE/);
   assert.match(bg, /doc\.documentUrl \?\? doc\.invoiceUrl/);
 });
+
+test('toIsoDate normalises dates in local time and rejects garbage', () => {
+  const sb = loadBackground();
+  assert.equal(sb.toIsoDate('2025-01-31'), '2025-01-31');
+  const local = new Date(2025, 0, 31, 0, 0, 0); // local midnight
+  assert.equal(sb.toIsoDate(local.toISOString()), '2025-01-31');
+  assert.equal(sb.toIsoDate(local), '2025-01-31');
+  assert.equal(sb.toIsoDate('not a date'), undefined);
+  assert.equal(sb.toIsoDate(null), undefined);
+  assert.equal(sb.toIsoDate(''), undefined);
+});
+
+test('toIntOrNull accepts positive integers only', () => {
+  const sb = loadBackground();
+  assert.equal(sb.toIntOrNull(5), 5);
+  assert.equal(sb.toIntOrNull('7'), 7);
+  assert.equal(sb.toIntOrNull(0), null);
+  assert.equal(sb.toIntOrNull(null), null);
+  assert.equal(sb.toIntOrNull('abc'), null);
+});
+
+test('isHtmlResult flags HTML responses by mime type or data URL', () => {
+  const sb = loadBackground();
+  assert.equal(sb.isHtmlResult({ mimeType: 'text/html; charset=utf-8', dataUrl: 'data:text/html;base64,x' }), true);
+  assert.equal(sb.isHtmlResult({ mimeType: '', dataUrl: 'data:text/html;base64,x' }), true);
+  assert.equal(sb.isHtmlResult({ mimeType: 'application/pdf', dataUrl: 'data:application/pdf;base64,x' }), false);
+  assert.equal(sb.isHtmlResult({ mimeType: 'application/octet-stream', dataUrl: 'data:application/octet-stream;base64,x' }), false);
+});

@@ -99,7 +99,11 @@ function paperless(action, paperlessUrl, paperlessToken, params = {}) {
 // ─── Haupt-Dokumentlogik ──────────────────────────────────────────────────────
 
 async function startDownload(config) {
-  const { shops, dateFrom, dateTo, paperlessUrl, paperlessToken, shopTags = {}, shopCustomFields = {} } = config;
+  const {
+    shops, dateFrom, dateTo, paperlessUrl, paperlessToken,
+    shopTags = {}, shopCustomFields = {},
+    shopDocumentTypes = {}, shopCorrespondents = {},
+  } = config;
 
   await ensureOffscreen();
 
@@ -173,14 +177,19 @@ async function startDownload(config) {
           // 3. PDF vom Shop laden (Content Script im Tab → Session-Cookies)
           const fetchResult = await sendToTab(tab.id, { action: 'FETCH_DOCUMENT', url: doc.documentUrl ?? doc.invoiceUrl }, 45_000);
           if (fetchResult.error) throw new Error(fetchResult.error);
-          if (fetchResult.dataUrl.length < 500) throw new Error('PDF zu klein — kein gültiges Dokument.');
+          if (!fetchResult.dataUrl || fetchResult.dataUrl.length < 500) throw new Error('PDF zu klein — kein gültiges Dokument.');
+          if (isHtmlResult(fetchResult)) throw new Error('Kein PDF erhalten (HTML) — Session abgelaufen?');
 
           // 4. Upload über Offscreen Document (mTLS)
           await paperless('UPLOAD_DOCUMENT', paperlessUrl, paperlessToken, {
-            dataUrl:      fetchResult.dataUrl,
-            filename:     doc.filename,
-            tagIds:       shopTags[shopId] ?? [],
-            customFields: shopCustomFields[shopId] ?? [],
+            dataUrl:         fetchResult.dataUrl,
+            filename:        doc.filename,
+            tagIds:          shopTags[shopId] ?? [],
+            customFields:    shopCustomFields[shopId] ?? [],
+            created:         toIsoDate(doc.date),
+            title:           doc.title,
+            documentTypeId:  toIntOrNull(shopDocumentTypes[shopId]),
+            correspondentId: toIntOrNull(shopCorrespondents[shopId]),
           });
 
           await addLocalCache(doc.orderId);
@@ -311,6 +320,30 @@ async function waitForLoginIfNeeded(tabId, shopId, intendedUrl) {
 }
 
 // ─── Hilfsfunktionen ─────────────────────────────────────────────────────────
+
+/**
+ * Normalisiert ein Dokumentdatum zu "YYYY-MM-DD" (lokale Zeitzone, damit
+ * ein von einem Plugin um lokale Mitternacht erzeugtes Datum nicht auf den
+ * Vortag rutscht). Liefert undefined bei fehlendem/ungültigem Wert.
+ */
+function toIsoDate(value) {
+  if (value == null || value === '') return undefined;
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return undefined;
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function toIntOrNull(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function isHtmlResult(fetchResult) {
+  const mime = String(fetchResult.mimeType || '').toLowerCase();
+  return mime.startsWith('text/html') || String(fetchResult.dataUrl || '').startsWith('data:text/html');
+}
 
 function emit(data) {
   if (progressPort) {
