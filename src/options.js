@@ -1,4 +1,4 @@
-mbeb// ─── DOM refs ─────────────────────────────────────────────────────────────────
+// ─── DOM refs ─────────────────────────────────────────────────────────────────
 
 const $ = id => document.getElementById(id);
 
@@ -16,6 +16,7 @@ const SHOP_IDS = [
   'amazon', 'ebay', 'zalando', 'mediamarkt', 'otto',
   'aliexpress', 'chatgpt', 'github', 'googleads', 'googlepay',
   'linkedin', 'metaads', 'microsoft365', 'openaiapi', 'paypal', 'revolut',
+  'sapfiori',
 ];
 
 const SHOP_LABELS = {
@@ -25,6 +26,7 @@ const SHOP_LABELS = {
   googleads: 'Google Ads', googlepay: 'Google Pay',
   linkedin: 'LinkedIn', metaads: 'Meta Ads', microsoft365: 'Microsoft 365',
   openaiapi: 'OpenAI API', paypal: 'PayPal', revolut: 'Revolut',
+  sapfiori: 'SAP Fiori / HR',
 };
 
 let _allCustomFields = [];

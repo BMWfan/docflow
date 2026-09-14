@@ -3,7 +3,7 @@ if (!window.__invoiceFlowLoaded) {
   window.__invoiceFlowLoaded = true;
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    const plugin = window.InvoiceFlowPlugin;
+    const plugin = window.DocFlowPlugin ?? window.InvoiceFlowPlugin;
 
     if (!plugin) {
       sendResponse({ error: 'Kein Plugin für diese Seite verfügbar.' });
