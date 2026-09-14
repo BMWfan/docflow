@@ -56,6 +56,7 @@ jobs:
                    src/background.js src/content.js src/paperless.js src/offscreen.js \
                    src/popup.js src/options.js \
                    src/plugins/aliexpress.js src/plugins/amazon.js src/plugins/chatgpt.js \
+                   src/plugins/deutschegiganetz.js src/plugins/deutschegiganetz-inject.js \
                    src/plugins/ebay.js src/plugins/github.js src/plugins/googleads.js \
                    src/plugins/googlepay.js src/plugins/linkedin.js src/plugins/mediamarkt.js \
                    src/plugins/metaads.js src/plugins/microsoft365.js src/plugins/openaiapi.js \

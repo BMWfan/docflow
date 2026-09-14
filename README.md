@@ -40,6 +40,7 @@ The extension uses the browser's existing authenticated sessions and uploads doc
 - Meta Ads
 - Microsoft 365
 - Revolut Business
+- Deutsche GigaNetz Kundenportal
 
 ### Enterprise / SAP
 

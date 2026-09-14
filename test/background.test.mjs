@@ -236,3 +236,21 @@ test('background forwards the global debugLogging flag to the SAP plugin config'
   const bg = readSource('src/background.js');
   assert.match(bg, /debug: Boolean\(debugLogging\)/);
 });
+
+test('waitForTabLoad resolves immediately when the tab is already complete', async () => {
+  const sb = loadBackground();
+  sb.chrome.tabs.get = async id => ({ id, status: 'complete' });
+  await sb.waitForTabLoad(1, 2000);
+});
+
+test('waitForTabLoad rejects after its timeout instead of hanging forever', async () => {
+  const sb = loadBackground();
+  sb.chrome.tabs.get = async id => ({ id, status: 'loading' });
+  await assert.rejects(sb.waitForTabLoad(1, 50), /Tab-Ladezeit überschritten/);
+});
+
+test('popup surfaces a rejected START_DOWNLOAD with DocFlow wording', () => {
+  const popup = readSource('src/popup.js');
+  assert.match(popup, /startResponse\?\.error/);
+  assert.doesNotMatch(popup, /Download starten/);
+});

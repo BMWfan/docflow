@@ -148,7 +148,7 @@ elBtnStart.addEventListener('click', async () => {
     elBtnStart.classList.remove('cancel');
   });
 
-  await chrome.runtime.sendMessage({
+  const startResponse = await chrome.runtime.sendMessage({
     action: 'START_DOWNLOAD',
     config: {
       shops,
@@ -164,6 +164,16 @@ elBtnStart.addEventListener('click', async () => {
       debugLogging:       Boolean(s.debugLogging),
     },
   });
+
+  if (startResponse?.error) {
+    appendLog('error', '!', startResponse.error);
+    progressPort.disconnect();
+    progressPort = null;
+    running = false;
+    elBtnStart.textContent = 'Dokumente abrufen';
+    elBtnStart.classList.remove('cancel');
+    elProgressArea.classList.remove('visible');
+  }
 });
 
 function getDateRange() {
@@ -301,6 +311,7 @@ const SHOP_LABELS = {
   linkedin: 'LinkedIn', metaads: 'Meta Ads', microsoft365: 'Microsoft 365',
   openaiapi: 'OpenAI API', paypal: 'PayPal', revolut: 'Revolut',
   sapfiori: 'SAP Fiori / HR',
+  deutschegiganetz: 'Deutsche GigaNetz',
 };
 function shopLabel(id) { return SHOP_LABELS[id] || id; }
 

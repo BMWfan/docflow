@@ -5,10 +5,20 @@ import path from 'node:path';
 import { loadScript, readSource, ROOT } from './helpers/load-script.mjs';
 
 const PLUGIN_DIR = path.join(ROOT, 'src', 'plugins');
-const files = fs.readdirSync(PLUGIN_DIR).filter(f => f.endsWith('.js')).sort();
+// *-inject.js files are MAIN-world helpers for a plugin, not plugins themselves
+const files = fs.readdirSync(PLUGIN_DIR).filter(f => f.endsWith('.js') && !f.endsWith('-inject.js')).sort();
 
-test('there are 17 plugin files', () => {
-  assert.equal(files.length, 17, files.join(', '));
+test('there are 18 plugin files', () => {
+  assert.equal(files.length, 18, files.join(', '));
+});
+
+test('every plugin file is wired in the manifest or registered dynamically', () => {
+  const manifest = JSON.parse(readSource('manifest.json'));
+  const wired = new Set(manifest.content_scripts.flatMap(cs => cs.js));
+  for (const f of files) {
+    if (f === 'sapfiori.js') continue; // chrome.scripting.registerContentScripts
+    assert.ok(wired.has(`src/plugins/${f}`), `${f} not in manifest content_scripts`);
+  }
 });
 
 for (const file of files) {

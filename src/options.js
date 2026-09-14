@@ -23,6 +23,7 @@ const SHOP_IDS = [
   'aliexpress', 'chatgpt', 'github', 'googleads', 'googlepay',
   'linkedin', 'metaads', 'microsoft365', 'openaiapi', 'paypal', 'revolut',
   'sapfiori',
+  'deutschegiganetz',
 ];
 
 const SHOP_LABELS = {
@@ -33,6 +34,7 @@ const SHOP_LABELS = {
   linkedin: 'LinkedIn', metaads: 'Meta Ads', microsoft365: 'Microsoft 365',
   openaiapi: 'OpenAI API', paypal: 'PayPal', revolut: 'Revolut',
   sapfiori: 'SAP Fiori / HR',
+  deutschegiganetz: 'Deutsche GigaNetz',
 };
 
 let _allCustomFields   = [];
