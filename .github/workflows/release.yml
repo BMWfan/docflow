@@ -28,7 +28,7 @@ jobs:
           VERSION=$(node -e "console.log(require('./manifest.json').version)")
           echo "version=$VERSION"   >> $GITHUB_OUTPUT
           echo "tag=v$VERSION"      >> $GITHUB_OUTPUT
-          echo "zip=invoiceflow-v${VERSION}.zip" >> $GITHUB_OUTPUT
+          echo "zip=docflow-v${VERSION}.zip" >> $GITHUB_OUTPUT
 
       # ─── Duplikat-Schutz ──────────────────────────────────────────────────
       - name: Abort if tag already exists
@@ -53,7 +53,7 @@ jobs:
 
       - name: Syntax-check JS files
         run: |
-          for f in src/background.js src/content.js src/options.js src/popup.js src/plugins/*.js; do
+          for f in $(find src -name '*.js' | sort); do
             node --check "$f" || exit 1
           done
           echo "All JS files OK."
@@ -67,6 +67,7 @@ jobs:
             manifest.json \
             popup.html \
             options.html \
+            offscreen.html \
             src/ \
             icons/icon16.png \
             icons/icon48.png \
@@ -92,7 +93,7 @@ jobs:
             --title "${TAG}" \
             --generate-notes \
             --verify-tag=false \
-            "$ZIP#InvoiceFlow ${VERSION} (Chrome/Edge Extension)"
+            "$ZIP#DocFlow ${VERSION} (Chrome/Edge Extension)"
 
           echo ""
           echo "Release erstellt: $TAG"

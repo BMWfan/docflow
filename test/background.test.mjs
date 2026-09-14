@@ -1,0 +1,58 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { loadScript, evalIn, readSource, plain } from './helpers/load-script.mjs';
+
+function loadBackground() {
+  return loadScript('src/background.js');
+}
+
+test('background registers message and connect listeners on load', () => {
+  const sb = loadBackground();
+  assert.equal(sb.chrome.listeners.onMessage.length, 1);
+  assert.equal(sb.chrome.listeners.onConnect.length, 1);
+});
+
+test('isLoginRedirect detects known login URLs', () => {
+  const sb = loadBackground();
+  for (const url of [
+    'https://www.amazon.de/ap/signin?x=1',
+    'https://login.microsoftonline.com/common/oauth2',
+    'https://accounts.google.com/ServiceLogin',
+    'https://signin.ebay.de/ws/eBayISAPI.dll',
+    'https://shop.example/login',
+  ]) {
+    assert.equal(sb.isLoginRedirect(url), true, url);
+  }
+});
+
+test('isLoginRedirect accepts normal shop URLs', () => {
+  const sb = loadBackground();
+  for (const url of [
+    'https://www.amazon.de/gp/css/order-history',
+    'https://www.paypal.com/reports/accountStatements',
+    'https://business.revolut.com/billing',
+    undefined,
+  ]) {
+    assert.equal(sb.isLoginRedirect(url), false, String(url));
+  }
+});
+
+test('SHOP_START_URL has an entry for every source selectable in the popup', () => {
+  const sb = loadBackground();
+  const startUrls = evalIn(sb, 'SHOP_START_URL');
+  const popup = readSource('popup.html');
+  const ids = [...popup.matchAll(/<input type="checkbox" value="([a-z0-9]+)"[^>]*>/g)].map(m => m[1]);
+  assert.ok(ids.length >= 17, `expected popup sources, got ${ids.length}`);
+  for (const id of ids) {
+    assert.ok(typeof startUrls[id] === 'string' && startUrls[id].startsWith('https://'), `missing start URL for ${id}`);
+  }
+});
+
+test('GET_STATUS reports no running job initially', async () => {
+  const sb = loadBackground();
+  const listener = sb.chrome.listeners.onMessage[0];
+  let out;
+  const ret = listener({ action: 'GET_STATUS' }, {}, r => { out = r; });
+  assert.equal(ret, false);
+  assert.deepEqual(plain(out), { running: false });
+});

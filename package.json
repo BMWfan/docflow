@@ -1,0 +1,13 @@
+{
+  "name": "docflow",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Chrome/Edge extension that archives documents from web portals and SAP/Fiori into Paperless-ngx",
+  "scripts": {
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "check": "for f in $(find src -name '*.js'); do node --check \"$f\" || exit 1; done"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
