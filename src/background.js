@@ -361,7 +361,9 @@ function isLoginRedirect(url) {
     u.includes('accounts.google.com')         ||
     u.includes('login.microsoftonline.com')   ||
     u.includes('signin.ebay.')                ||
-    u.includes('identity.linkedin.com')
+    u.includes('identity.linkedin.com')       ||
+    u.includes('/saml2/')                     ||   // SAP SAML-Logon
+    u.includes('/sap/bc/sec/')                     // SAP Logon-Seiten
   );
 }
 

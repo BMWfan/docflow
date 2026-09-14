@@ -1,0 +1,322 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { loadScript, plain } from './helpers/load-script.mjs';
+
+const REL = 'src/plugins/sapfiori.js';
+
+function load(opts = {}) {
+  const sb = loadScript(REL, { location: { origin: 'https://sap.example.com', hostname: 'sap.example.com' }, ...opts });
+  return { sb, plugin: sb.window.DocFlowPlugin, I: sb.window.DocFlowPlugin._internals };
+}
+
+function jsonResp(body, status = 200) {
+  return { ok: status < 400, status, headers: new Headers({ 'content-type': 'application/json' }), json: async () => body, text: async () => JSON.stringify(body) };
+}
+function textResp(text, status = 200, type = 'application/xml') {
+  return { ok: status < 400, status, headers: new Headers({ 'content-type': type }), text: async () => text, json: async () => { throw new Error('not json'); } };
+}
+function blobResp(bytes, type, status = 200, headerType = type) {
+  const blob = new Blob([bytes], { type });
+  return { ok: status < 400, status, headers: new Headers(headerType ? { 'content-type': headerType } : {}), blob: async () => blob };
+}
+
+const METADATA_XML = `<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx Version="1.0" xmlns:edmx="http://schemas.microsoft.com/ado/2007/06/edmx" xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata">
+ <edmx:DataServices m:DataServiceVersion="2.0">
+  <Schema Namespace="XSS_PDF_VIEWER_SRV" xmlns="http://schemas.microsoft.com/ado/2008/09/edm">
+   <EntityType Name="Categorie" sap:content-version="1">
+    <Key><PropertyRef Name="Viewid"/></Key>
+    <Property Name="Viewid" Type="Edm.String" Nullable="false"/>
+    <Property Name="Title" Type="Edm.String"/>
+    <NavigationProperty Name="Cat2Period" Relationship="XSS_PDF_VIEWER_SRV.CatPeriod" FromRole="FromRole_CatPeriod" ToRole="ToRole_CatPeriod"/>
+   </EntityType>
+   <EntityType Name="Period">
+    <Key><PropertyRef Name="Viewid"/><PropertyRef Name="Pdfkey"/></Key>
+    <Property Name="Viewid" Type="Edm.String"/>
+    <Property Name="Pdfkey" Type="Edm.String"/>
+    <Property Name="Field1" Type="Edm.String"/>
+   </EntityType>
+   <EntityType Name="PDFContent" m:HasStream="true">
+    <Key><PropertyRef Name="Viewid"/><PropertyRef Name="Pdfkey"/></Key>
+    <Property Name="Viewid" Type="Edm.String"/>
+    <Property Name="Pdfkey" Type="Edm.String"/>
+   </EntityType>
+   <EntityContainer Name="XSS_PDF_VIEWER_SRV_Entities" m:IsDefaultEntityContainer="true">
+    <EntitySet Name="CategorieSet" EntityType="XSS_PDF_VIEWER_SRV.Categorie"/>
+    <EntitySet Name="PeriodSet" EntityType="XSS_PDF_VIEWER_SRV.Period"/>
+    <EntitySet Name="PDFContentSet" EntityType="XSS_PDF_VIEWER_SRV.PDFContent"/>
+   </EntityContainer>
+  </Schema>
+ </edmx:DataServices>
+</edmx:Edmx>`;
+
+// Same model, different naming — must be discovered, not hardcoded
+const OTHER_TENANT_XML = `<edmx:Edmx xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata">
+<EntityType Name="DocCategory"><Key><PropertyRef Name="CategoryId"/></Key>
+ <NavigationProperty Name="ToDocuments" Relationship="x" FromRole="a" ToRole="b"/>
+</EntityType>
+<EntityType Name="DocStream" m:HasStream="true"><Key><PropertyRef Name="CategoryId"/><PropertyRef Name="DocKey"/></Key></EntityType>
+<EntitySet Name="DocCategorySet" EntityType="NS.DocCategory"/>
+<EntitySet Name="DocStreamSet" EntityType="NS.DocStream"/>
+</edmx:Edmx>`;
+
+// ─── parseSapDate ─────────────────────────────────────────────────────────────
+
+test('parseSapDate: DD.MM.YYYY - DD.MM.YYYY returns start and end (end is the document date)', () => {
+  const { I } = load();
+  const r = I.parseSapDate('Abrechnung 01.01.2025 - 31.01.2025');
+  assert.equal(r.start.getFullYear(), 2025); assert.equal(r.start.getMonth(), 0); assert.equal(r.start.getDate(), 1);
+  assert.equal(r.end.getMonth(), 0); assert.equal(r.end.getDate(), 31);
+});
+
+test('parseSapDate: swapped range is normalised', () => {
+  const { I } = load();
+  const r = I.parseSapDate('31.01.2025 - 01.01.2025');
+  assert.ok(r.start < r.end);
+});
+
+test('parseSapDate: single DD.MM.YYYY', () => {
+  const { I } = load();
+  const r = I.parseSapDate('15.03.2024');
+  assert.equal(r.start.getDate(), 15); assert.equal(r.start.getMonth(), 2); assert.equal(r.end.getTime(), r.start.getTime());
+});
+
+test('parseSapDate: MM.YYYY returns first and last day of month', () => {
+  const { I } = load();
+  const r = I.parseSapDate('02.2024');
+  assert.equal(r.start.getDate(), 1); assert.equal(r.start.getMonth(), 1);
+  assert.equal(r.end.getDate(), 29); assert.equal(r.end.getMonth(), 1);
+});
+
+test('parseSapDate: YYYYMMDD and YYYY-MM-DD', () => {
+  const { I } = load();
+  assert.equal(I.parseSapDate('20250131').end.getDate(), 31);
+  assert.equal(I.parseSapDate('2025-01-31T00:00:00').end.getMonth(), 0);
+});
+
+test('parseSapDate: /Date(ms)/ JSON format', () => {
+  const { I } = load();
+  const ms = Date.UTC(2025, 0, 31);
+  assert.equal(I.parseSapDate(`/Date(${ms})/`).start.getTime(), ms);
+  assert.equal(I.parseSapDate(`/Date(${ms}+0000)/`).start.getTime(), ms);
+});
+
+test('parseSapDate: garbage and invalid calendar dates return null', () => {
+  const { I } = load();
+  assert.equal(I.parseSapDate('Januar'), null);
+  assert.equal(I.parseSapDate(''), null);
+  assert.equal(I.parseSapDate(null), null);
+  assert.equal(I.parseSapDate('31.02.2025'), null);
+});
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+test('odataLiteral escapes single quotes and URL-encodes', () => {
+  const { I } = load();
+  assert.equal(I.odataLiteral("O'Brien/1 2"), "'O''Brien%2F1%202'");
+  assert.equal(I.odataLiteral('2PAYSTUB'), "'2PAYSTUB'");
+});
+
+test('sanitize keeps a filesystem-safe token', () => {
+  const { I } = load();
+  assert.equal(I.sanitize('  Gehalt / Januar 2025  '), 'Gehalt_Januar_2025');
+  assert.equal(I.sanitize('sap-2PAYSTUB-ABC/123'), 'sap-2PAYSTUB-ABC123');
+  assert.equal(I.sanitize('___'), '');
+});
+
+test('buildFilename contains the orderId token, has no amount slot, and stays within 150 chars', () => {
+  const { I } = load();
+  const date = new Date(2025, 0, 31);
+  const name = I.buildFilename(date, 'Gehaltsabrechnung', '01.01.2025 - 31.01.2025', 'sap-2PAYSTUB-K1');
+  assert.equal(name, '20250131_sap_Gehaltsabrechnung_01.01.2025_-_31.01.2025_sap-2PAYSTUB-K1.pdf');
+  const long = I.buildFilename(date, 'X'.repeat(120), 'Y'.repeat(120), 'sap-2PAYSTUB-K1');
+  assert.ok(long.length <= 150, String(long.length));
+  assert.ok(long.endsWith('_sap-2PAYSTUB-K1.pdf'));
+  assert.equal(I.buildFilename(null, '', '', 'sap-1'), 'nodate_sap_document_period_sap-1.pdf');
+});
+
+test('pickPdfKeyName prefers the pdf key regardless of order', () => {
+  const { I } = load();
+  assert.equal(I.pickPdfKeyName(['Viewid', 'Pdfkey']), 'Pdfkey');
+  assert.equal(I.pickPdfKeyName(['CategoryId', 'DocKey']), 'DocKey');
+  assert.equal(I.pickPdfKeyName(['Id']), 'Id');
+});
+
+test('resolveConfig trims the service path and defaults debug to false', () => {
+  const { I } = load();
+  assert.deepEqual(plain(I.resolveConfig({ servicePath: ' /sap/opu/odata/x/SRV/ ', client: ' 100 ' })), { servicePath: '/sap/opu/odata/x/SRV', client: '100', debug: false });
+  assert.deepEqual(plain(I.resolveConfig(null)), { servicePath: '', client: '', debug: false });
+});
+
+// ─── analyzeMetadata ─────────────────────────────────────────────────────────
+
+test('analyzeMetadata finds HasStream set, its keys, the category set and the period navigation', () => {
+  const { I } = load();
+  assert.deepEqual(plain(I.analyzeMetadata(METADATA_XML)), {
+    categorySet: 'CategorieSet', periodNav: 'Cat2Period', streamSet: 'PDFContentSet', streamKeys: ['Viewid', 'Pdfkey'],
+  });
+});
+
+test('analyzeMetadata discovers differently named tenants', () => {
+  const { I } = load();
+  assert.deepEqual(plain(I.analyzeMetadata(OTHER_TENANT_XML)), {
+    categorySet: 'DocCategorySet', periodNav: 'ToDocuments', streamSet: 'DocStreamSet', streamKeys: ['CategoryId', 'DocKey'],
+  });
+});
+
+test('analyzeMetadata falls back per field when parts are missing', () => {
+  const { I } = load();
+  const xml = `<EntityType Name="Thing"><Key><PropertyRef Name="Id"/></Key></EntityType><EntitySet Name="ThingSet" EntityType="NS.Thing"/>`;
+  assert.deepEqual(plain(I.analyzeMetadata(xml)), plain(I.DEFAULT_MODEL));
+});
+
+test('analyzeMetadata returns null on invalid or empty XML', () => {
+  const { I } = load();
+  assert.equal(I.analyzeMetadata(''), null);
+  assert.equal(I.analyzeMetadata('<html>login</html>'), null);
+  assert.equal(I.analyzeMetadata(null), null);
+});
+
+// ─── getDocuments (fetch stubbed) ────────────────────────────────────────────
+
+function makeFetch(routes, log = []) {
+  return async (url, init) => {
+    const u = String(url);
+    log.push(u);
+    for (const [pattern, handler] of routes) {
+      if (pattern.test(u)) return handler(u, init);
+    }
+    return textResp('not found', 404);
+  };
+}
+
+test('getDocuments uses servicePath from sourceConfig, applies the discovered model and builds correct URLs', async () => {
+  const log = [];
+  const fetch = makeFetch([
+    [/\$metadata$/, () => textResp(METADATA_XML)],
+    [/CategorieSet\?/, () => jsonResp({ d: { results: [{ Viewid: '2PAYSTUB', Title: 'Gehaltsabrechnung' }] } })],
+    [/CategorieSet\('2PAYSTUB'\)\/Cat2Period/, () => jsonResp({ d: { results: [
+      { Viewid: '2PAYSTUB', Pdfkey: 'K1', Field1: '01.01.2025 - 31.01.2025', Field2: '', Field3: 'Januar 2025' },
+      { Viewid: '2PAYSTUB', Pdfkey: 'K2', Field1: '01.06.2024 - 30.06.2024' },
+      { Viewid: '2PAYSTUB', Pdfkey: '' },
+      { Viewid: '2PAYSTUB', Pdfkey: "K'3", Field1: 'Sonderzahlung' },
+    ] } })],
+  ], log);
+  const { plugin } = load({ fetch });
+  const docs = plain(await plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/sap/opu/odata/x/SRV/' }));
+
+  assert.ok(log[0].startsWith('/sap/opu/odata/x/SRV/$metadata'));
+  assert.ok(!log.some(u => u.includes('CATALOGSERVICE')), 'no catalog lookup when servicePath is configured');
+  assert.equal(docs.length, 2, 'dated-out-of-range row dropped, empty key dropped, undated kept');
+
+  const [k1, k3] = docs;
+  assert.equal(k1.orderId, 'sap-2PAYSTUB-K1');
+  assert.equal(k1.id, k1.orderId);
+  assert.equal(k1.documentUrl, "/sap/opu/odata/x/SRV/PDFContentSet(Viewid='2PAYSTUB',Pdfkey='K1')/$value?download=X");
+  assert.equal(k1.filename, '20250131_sap_Gehaltsabrechnung_Januar_2025_sap-2PAYSTUB-K1.pdf');
+  assert.ok(k1.filename.includes(k1.orderId));
+  assert.equal(k1.date.slice(0, 4), '2025');
+  assert.equal(k1.category, 'Gehaltsabrechnung');
+  assert.equal(k1.source, 'sapfiori');
+  assert.equal(k1.mimeType, 'application/pdf');
+  assert.equal(k1.meta.pdfKey, 'K1');
+  assert.equal(k1.meta.period, '01.01.2025 - 31.01.2025');
+  assert.equal(k1.title, undefined, 'no title so the filename token stays in the Paperless title');
+
+  assert.equal(k3.date, null);
+  assert.ok(k3.filename.startsWith('nodate_sap_'));
+  assert.equal(k3.orderId, 'sap-2PAYSTUB-K3');
+  assert.equal(k3.documentUrl, "/sap/opu/odata/x/SRV/PDFContentSet(Viewid='2PAYSTUB',Pdfkey='K''3')/$value?download=X");
+});
+
+test('getDocuments discovers the service path via the gateway catalog when none is configured', async () => {
+  const log = [];
+  const fetch = makeFetch([
+    [/CATALOGSERVICE/, () => jsonResp({ d: { results: [
+      { TechnicalServiceName: 'ZOTHER_SRV', ServiceUrl: 'https://sap.example.com/sap/opu/odata/sap/ZOTHER_SRV/' },
+      { TechnicalServiceName: 'XSS_PDF_VIEWER_SRV', ServiceUrl: 'https://sap.example.com:443/sap/opu/odata/kwp/XSS_PDF_VIEWER_SRV/' },
+    ] } })],
+    [/\$metadata$/, () => textResp(METADATA_XML)],
+    [/CategorieSet\?/, () => jsonResp({ d: { results: [] } })],
+    [/Cat2Period/, () => jsonResp({ d: { results: [{ Pdfkey: 'A', Viewid: '2PAYSTUB', Field1: '01.02.2025 - 28.02.2025' }] } })],
+  ], log);
+  const { plugin } = load({ fetch });
+  const docs = plain(await plugin.getDocuments('2025-01-01', '2025-12-31', {}));
+  assert.ok(log[0].includes('CATALOGSERVICE'));
+  assert.ok(log[1].startsWith('/sap/opu/odata/kwp/XSS_PDF_VIEWER_SRV/$metadata'));
+  assert.equal(docs.length, 1, 'empty category list falls back to the default view id');
+  assert.equal(docs[0].meta.viewId, '2PAYSTUB');
+});
+
+test('getDocuments falls back to DEFAULT_MODEL and DEFAULT_SERVICE_PATH when catalog and $metadata fail', async () => {
+  const log = [];
+  const fetch = makeFetch([
+    [/CATALOGSERVICE/, () => textResp('forbidden', 403)],
+    [/\$metadata$/, () => textResp('<html>login</html>', 200, 'text/html')],
+    [/CategorieSet\?/, () => jsonResp({ d: { results: [{ Viewid: 'X', Title: 'T' }] } })],
+    [/CategorieSet\('X'\)\/Cat2Period/, () => jsonResp({ d: { results: [{ Pdfkey: 'P', Viewid: 'X', Field2: '10.10.2025' }] } })],
+  ], log);
+  const { plugin } = load({ fetch });
+  const docs = plain(await plugin.getDocuments('2025-01-01', '2025-12-31'));
+  assert.equal(docs.length, 1);
+  assert.equal(docs[0].documentUrl, "/sap/opu/odata/kwp/XSS_PDF_VIEWER_SRV/PDFContentSet(Pdfkey='P',Viewid='X')/$value?download=X");
+});
+
+test('getDocuments throws when every category fails instead of silently returning nothing', async () => {
+  const fetch = makeFetch([
+    [/\$metadata$/, () => textResp(METADATA_XML)],
+    [/CategorieSet\?/, () => jsonResp({ d: { results: [{ Viewid: 'A' }, { Viewid: 'B' }] } })],
+    [/Cat2Period/, () => textResp('error', 500)],
+  ]);
+  const { plugin } = load({ fetch });
+  await assert.rejects(plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/s' }), /Dokumentliste konnte nicht geladen werden/);
+});
+
+test('getDocuments logs nothing unless debug is enabled, and never logs document keys', async () => {
+  const lines = [];
+  const fakeConsole = { debug: (...a) => lines.push(a.map(String).join(' ')), log() {}, warn() {}, error() {} };
+  const routes = [
+    [/\$metadata$/, () => textResp(METADATA_XML)],
+    [/CategorieSet\?/, () => jsonResp({ d: { results: [{ Viewid: '2PAYSTUB' }] } })],
+    [/Cat2Period/, () => jsonResp({ d: { results: [{ Pdfkey: 'SECRETKEY', Viewid: '2PAYSTUB', Field1: '01.01.2025 - 31.01.2025' }] } })],
+  ];
+  const quiet = load({ fetch: makeFetch(routes), console: fakeConsole });
+  await quiet.plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/s' });
+  assert.equal(lines.length, 0, 'silent without debug');
+
+  const loud = load({ fetch: makeFetch(routes), console: fakeConsole });
+  await loud.plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/s', debug: true });
+  assert.ok(lines.length > 0);
+  assert.ok(lines.every(l => l.startsWith('[DocFlow][SAP]')));
+  assert.ok(!lines.some(l => l.includes('SECRETKEY')), 'pdf keys must not be logged');
+  assert.ok(!lines.some(l => l.includes('01.01.2025')), 'periods must not be logged');
+});
+
+// ─── fetchDocument ───────────────────────────────────────────────────────────
+
+test('fetchDocument accepts application/pdf', async () => {
+  const fetch = async () => blobResp('%PDF-1.7 ' + 'x'.repeat(200), 'application/pdf');
+  const { plugin } = load({ fetch });
+  const blob = await plugin.fetchDocument('/s/PDFContentSet(1)/$value');
+  assert.equal(blob.type, 'application/pdf');
+});
+
+test('fetchDocument accepts octet-stream with %PDF magic bytes', async () => {
+  const fetch = async () => blobResp('%PDF-1.4 ' + 'x'.repeat(200), 'application/octet-stream');
+  const { plugin } = load({ fetch });
+  const blob = await plugin.fetchDocument('/x');
+  assert.ok(blob.size > 100);
+});
+
+test('fetchDocument rejects an HTML login page even when the type header is missing', async () => {
+  const fetch = async () => blobResp('<!doctype html><html>' + 'x'.repeat(200), 'text/html', 200, '');
+  const { plugin } = load({ fetch });
+  await assert.rejects(plugin.fetchDocument('/x'), /kein PDF/);
+});
+
+test('fetchDocument rejects tiny blobs and HTTP errors', async () => {
+  const small = async () => blobResp('%PDF-', 'application/pdf');
+  await assert.rejects(load({ fetch: small }).plugin.fetchDocument('/x'), /zu klein/);
+  const err = async () => blobResp('', 'application/pdf', 401);
+  await assert.rejects(load({ fetch: err }).plugin.fetchDocument('/x'), /HTTP 401/);
+});

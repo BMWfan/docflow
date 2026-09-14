@@ -206,3 +206,10 @@ test('background passes sourceConfig with GET_DOCUMENTS and FETCH_DOCUMENT', () 
   assert.match(bg, /action: 'GET_DOCUMENTS', dateFrom, dateTo, sourceConfig/);
   assert.match(bg, /action: 'FETCH_DOCUMENT', url: doc\.documentUrl \?\? doc\.invoiceUrl, sourceConfig/);
 });
+
+test('isLoginRedirect recognises SAP SAML and logon pages', () => {
+  const sb = loadBackground();
+  assert.equal(sb.isLoginRedirect('https://sap.example.com/sap/bc/sec/oauth2/x'), true);
+  assert.equal(sb.isLoginRedirect('https://idp.example.com/saml2/sso'), true);
+  assert.equal(sb.isLoginRedirect('https://sap.example.com/sap/bc/ui2/flp?sap-client=100#ZXSSFORMVIEWER-display'), false);
+});
