@@ -1,5 +1,5 @@
 /**
- * InvoiceFlow — Offscreen Document
+ * DocFlow — Offscreen Document
  *
  * Läuft im normalen Browser-Rendering-Kontext, nicht im Service Worker.
  * Dadurch unterstützt fetch() hier Client-Zertifikate für mTLS.

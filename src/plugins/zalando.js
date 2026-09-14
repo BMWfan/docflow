@@ -1,5 +1,5 @@
 /**
- * InvoiceFlow — Zalando.de Plugin
+ * DocFlow — Zalando.de Plugin
  *
  * Bestellhistorie: https://www.zalando.de/myaccount/orders
  * Rechnungen:      Als PDF-Link je Bestellung in der Detailansicht
@@ -7,7 +7,7 @@
  * Status: Grundgerüst — Selektoren müssen an aktuelles Zalando-Frontend angepasst werden.
  */
 
-window.InvoiceFlowPlugin = (() => {
+window.DocFlowPlugin = (() => {
 
   const BASE_URL = 'https://www.zalando.de';
 
@@ -40,7 +40,7 @@ window.InvoiceFlowPlugin = (() => {
     name:    'Zalando',
     domains: ['zalando.de'],
 
-    async getInvoices(dateFrom, dateTo) {
+    async getDocuments(dateFrom, dateTo) {
       const from = new Date(dateFrom);
       const to   = new Date(dateTo);
       to.setHours(23, 59, 59, 999);
@@ -97,7 +97,7 @@ window.InvoiceFlowPlugin = (() => {
               orderId,
               date: date.toISOString(),
               amount,
-              invoiceUrl: href.startsWith('http') ? href : BASE_URL + href,
+              documentUrl: href.startsWith('http') ? href : BASE_URL + href,
               filename:   _buildFilename(date, amount, orderId),
             });
             continue;
@@ -108,7 +108,7 @@ window.InvoiceFlowPlugin = (() => {
             orderId,
             date: date.toISOString(),
             amount,
-            invoiceUrl: href.startsWith('http') ? href : BASE_URL + href,
+            documentUrl: href.startsWith('http') ? href : BASE_URL + href,
             filename:   _buildFilename(date, amount, orderId),
           });
         }
@@ -123,7 +123,7 @@ window.InvoiceFlowPlugin = (() => {
       return invoices;
     },
 
-    async fetchInvoice(url) {
+    async fetchDocument(url) {
       const resp = await fetch(url, {
         credentials: 'include',
         headers: { Accept: 'application/pdf, */*' },

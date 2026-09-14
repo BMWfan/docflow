@@ -1,4 +1,4 @@
-window.InvoiceFlowPlugin = (() => {
+window.DocFlowPlugin = (() => {
   const _sleep = ms => new Promise(r => setTimeout(r, ms));
 
   function _fmtDate(d) {
@@ -29,7 +29,7 @@ window.InvoiceFlowPlugin = (() => {
     name: 'GitHub',
     domains: ['github.com'],
 
-    async getInvoices(dateFrom, dateTo) {
+    async getDocuments(dateFrom, dateTo) {
       const from = new Date(dateFrom);
       const to   = new Date(dateTo);
       to.setHours(23, 59, 59, 999);
@@ -72,14 +72,14 @@ window.InvoiceFlowPlugin = (() => {
           orderId:    id,
           date:       orderDate.toISOString(),
           amount,
-          invoiceUrl: url,
+          documentUrl: url,
           filename:   _filename(orderDate, amount, id),
         });
       }
       return invoices;
     },
 
-    async fetchInvoice(url) {
+    async fetchDocument(url) {
       const resp = await fetch(url, {
         credentials: 'include',
         headers: { Accept: 'application/pdf,text/html,*/*' },

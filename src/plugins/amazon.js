@@ -1,13 +1,13 @@
 /**
- * InvoiceFlow — Amazon Plugin
+ * DocFlow — Amazon Plugin
  *
  * Unterstützte Domains: amazon.de · amazon.com · amazon.co.uk · amazon.fr · amazon.it · amazon.es
  *
  * Ablauf:
- *  1. getInvoices() durchläuft die Bestellhistorie jahrweise mit Pagination.
+ *  1. getDocuments() durchläuft die Bestellhistorie jahrweise mit Pagination.
  *  2. Für jede Bestellung im Zeitraum: direkten Rechnungslink suchen.
  *     Falls keiner vorhanden → Detailseite laden und dort suchen.
- *  3. fetchInvoice() lädt das PDF als Blob (nutzt Session-Cookies der Seite).
+ *  3. fetchDocument() lädt das PDF als Blob (nutzt Session-Cookies der Seite).
  *
  * Hinweis zu CSS-Selektoren:
  *  Amazon ändert sein Frontend regelmäßig. Die Selektoren sind im Mai 2025
@@ -15,7 +15,7 @@
  *  der Selektoren in _SELECTORS nötig.
  */
 
-window.InvoiceFlowPlugin = (() => {
+window.DocFlowPlugin = (() => {
 
   // ─── Konfiguration ─────────────────────────────────────────────────────────
 
@@ -226,7 +226,7 @@ window.InvoiceFlowPlugin = (() => {
    * Extrahiert alle Bestellungen aus einem Übersichts-Dokument,
    * filtert nach Zeitraum und gibt eine Liste von Invoice-Objekten zurück.
    * Bestellungen, bei denen der Rechnungslink erst auf der Detailseite steht,
-   * werden mit invoiceUrl = '__DETAIL__:<url>' markiert.
+   * werden mit documentUrl = '__DETAIL__:<url>' markiert.
    */
   function _parseOrderCards(doc, dateFrom, dateTo, baseUrl) {
     const from    = new Date(dateFrom);
@@ -275,25 +275,25 @@ window.InvoiceFlowPlugin = (() => {
 
       // ─── Rechnungslink ──────────────────────────────────────────────────────
       const linkFound = _findInvoiceLink(card, baseUrl);
-      let invoiceUrl;
+      let documentUrl;
 
       if (linkFound) {
-        if (linkFound.type === 'print')   invoiceUrl = `__PRINT__:${linkFound.url}`;
-        else if (linkFound.type === 'popover') invoiceUrl = `__POPOVER__:${linkFound.url}`;
-        else invoiceUrl = linkFound.url;
+        if (linkFound.type === 'print')   documentUrl = `__PRINT__:${linkFound.url}`;
+        else if (linkFound.type === 'popover') documentUrl = `__POPOVER__:${linkFound.url}`;
+        else documentUrl = linkFound.url;
       } else {
         const detailEl = card.querySelector(_SELECTORS.detailLink);
         if (!detailEl) continue;
         const href = detailEl.getAttribute('href');
         const detailUrl = href.startsWith('http') ? href : baseUrl + href;
-        invoiceUrl = `__DETAIL__:${detailUrl}`;
+        documentUrl = `__DETAIL__:${detailUrl}`;
       }
 
       results.push({
         orderId,
         date:       orderDate.toISOString(),
         amount,
-        invoiceUrl,
+        documentUrl,
         filename:   _buildFilename(orderDate, amount, orderId),
       });
     }
@@ -312,7 +312,7 @@ window.InvoiceFlowPlugin = (() => {
      * kein fetch — funktioniert auch mit Amazon Client-Side-Decryption).
      * Gibt außerdem die URL der nächsten Seite zurück (für Pagination via background.js).
      */
-    async getInvoicesFromCurrentPage(dateFrom, dateTo) {
+    async getDocumentsFromCurrentPage(dateFrom, dateTo) {
       const baseUrl = `https://${window.location.hostname}`;
 
       if (document.querySelector(_SELECTORS.loginForm)) {
@@ -352,21 +352,21 @@ window.InvoiceFlowPlugin = (() => {
       const rawInvoices = _parseOrderCards(document, dateFrom, dateTo, baseUrl);
 
       for (const inv of rawInvoices) {
-        if (inv.invoiceUrl.startsWith('__PRINT__:')) {
-          const printUrl = inv.invoiceUrl.slice('__PRINT__:'.length);
+        if (inv.documentUrl.startsWith('__PRINT__:')) {
+          const printUrl = inv.documentUrl.slice('__PRINT__:'.length);
           await _sleep(200 + Math.random() * 300);
           const pdfUrl = await _resolvePrintToPdf(printUrl, baseUrl).catch(() => null);
-          if (pdfUrl) { inv.invoiceUrl = pdfUrl; invoices.push(inv); }
-        } else if (inv.invoiceUrl.startsWith('__POPOVER__:')) {
-          const popoverUrl = inv.invoiceUrl.slice('__POPOVER__:'.length);
+          if (pdfUrl) { inv.documentUrl = pdfUrl; invoices.push(inv); }
+        } else if (inv.documentUrl.startsWith('__POPOVER__:')) {
+          const popoverUrl = inv.documentUrl.slice('__POPOVER__:'.length);
           await _sleep(200 + Math.random() * 300);
           const pdfUrl = await _resolvePopoverToPdf(popoverUrl, baseUrl).catch(() => null);
-          if (pdfUrl) { inv.invoiceUrl = pdfUrl; invoices.push(inv); }
-        } else if (inv.invoiceUrl.startsWith('__DETAIL__:')) {
-          const detailUrl = inv.invoiceUrl.slice('__DETAIL__:'.length);
+          if (pdfUrl) { inv.documentUrl = pdfUrl; invoices.push(inv); }
+        } else if (inv.documentUrl.startsWith('__DETAIL__:')) {
+          const detailUrl = inv.documentUrl.slice('__DETAIL__:'.length);
           await _sleep(300 + Math.random() * 400);
           const resolved = await _resolveFromDetailPage(detailUrl, baseUrl).catch(() => null);
-          if (resolved) { inv.invoiceUrl = resolved; invoices.push(inv); }
+          if (resolved) { inv.documentUrl = resolved; invoices.push(inv); }
         } else {
           invoices.push(inv);
         }
@@ -377,15 +377,15 @@ window.InvoiceFlowPlugin = (() => {
         ? (nextLink.href.startsWith('http') ? nextLink.href : baseUrl + nextLink.href)
         : null;
 
-      return { invoices, nextUrl };
+      return { documents: invoices, nextUrl };
     },
 
     /**
      * Gibt alle Rechnungen im Zeitraum [dateFrom, dateTo] zurück.
      * Durchläuft alle relevanten Jahre mit Pagination.
-     * @deprecated Wird durch getInvoicesFromCurrentPage + background-Navigation ersetzt.
+     * @deprecated Wird durch getDocumentsFromCurrentPage + background-Navigation ersetzt.
      */
-    async getInvoices(dateFrom, dateTo) {
+    async getDocuments(dateFrom, dateTo) {
       const baseUrl   = `https://${window.location.hostname}`;
       const yearFrom  = new Date(dateFrom).getFullYear();
       const yearTo    = new Date(dateTo).getFullYear();
@@ -413,21 +413,21 @@ window.InvoiceFlowPlugin = (() => {
 
           // Detailseiten / Popover / Print für Bestellungen ohne direkten PDF-Link
           for (const inv of pageInvoices) {
-            if (inv.invoiceUrl.startsWith('__PRINT__:')) {
-              const printUrl = inv.invoiceUrl.slice('__PRINT__:'.length);
+            if (inv.documentUrl.startsWith('__PRINT__:')) {
+              const printUrl = inv.documentUrl.slice('__PRINT__:'.length);
               await _sleep(200 + Math.random() * 300);
               const pdfUrl = await _resolvePrintToPdf(printUrl, baseUrl).catch(() => null);
-              if (pdfUrl) { inv.invoiceUrl = pdfUrl; allInvoices.push(inv); }
-            } else if (inv.invoiceUrl.startsWith('__POPOVER__:')) {
-              const popoverUrl = inv.invoiceUrl.slice('__POPOVER__:'.length);
+              if (pdfUrl) { inv.documentUrl = pdfUrl; allInvoices.push(inv); }
+            } else if (inv.documentUrl.startsWith('__POPOVER__:')) {
+              const popoverUrl = inv.documentUrl.slice('__POPOVER__:'.length);
               await _sleep(200 + Math.random() * 300);
               const pdfUrl = await _resolvePopoverToPdf(popoverUrl, baseUrl).catch(() => null);
-              if (pdfUrl) { inv.invoiceUrl = pdfUrl; allInvoices.push(inv); }
-            } else if (inv.invoiceUrl.startsWith('__DETAIL__:')) {
-              const detailUrl = inv.invoiceUrl.slice('__DETAIL__:'.length);
+              if (pdfUrl) { inv.documentUrl = pdfUrl; allInvoices.push(inv); }
+            } else if (inv.documentUrl.startsWith('__DETAIL__:')) {
+              const detailUrl = inv.documentUrl.slice('__DETAIL__:'.length);
               await _sleep(300 + Math.random() * 400);
               const resolved = await _resolveFromDetailPage(detailUrl, baseUrl).catch(() => null);
-              if (resolved) { inv.invoiceUrl = resolved; allInvoices.push(inv); }
+              if (resolved) { inv.documentUrl = resolved; allInvoices.push(inv); }
             } else {
               allInvoices.push(inv);
             }
@@ -454,7 +454,7 @@ window.InvoiceFlowPlugin = (() => {
      * Lädt eine einzelne Rechnung als Blob (PDF).
      * Nutzt die Sitzungs-Cookies der Seite für die Authentifizierung.
      */
-    async fetchInvoice(url) {
+    async fetchDocument(url) {
       const resp = await fetch(url, {
         credentials: 'include',
         headers: { Accept: 'application/pdf, */*' },

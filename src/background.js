@@ -137,26 +137,26 @@ async function startDownload(config) {
 
       let documents;
       if (SHOPS_USE_PAGE_NAVIGATION.has(shopId)) {
-        documents = await collectInvoicesViaNavigation(tab.id, shopId, dateFrom, dateTo);
+        documents = await collectDocumentsViaNavigation(tab.id, shopId, dateFrom, dateTo);
       } else {
         const listResult = await sendToTab(tab.id, { action: 'GET_DOCUMENTS', dateFrom, dateTo }, 120_000);
         if (listResult.error) throw new Error(listResult.error);
         documents = listResult.documents ?? listResult.invoices ?? [];
       }
       totalDiscovered += documents.length;
-      emit({ type: 'SHOP_INVOICES_FOUND', shop: shopId, count: documents.length });
+      emit({ type: 'SHOP_DOCUMENTS_FOUND', shop: shopId, count: documents.length });
       emit({ type: 'DOCUMENT_DISCOVERED', shop: shopId, message: `${documents.length} Dokumente erkannt` });
 
       for (let i = 0; i < documents.length; i++) {
         if (activeJob.cancelled) break;
 
         const doc = documents[i];
-        emit({ type: 'INVOICE_PROCESSING', shop: shopId, filename: doc.filename, current: i + 1, total: documents.length });
+        emit({ type: 'DOCUMENT_PROCESSING', shop: shopId, filename: doc.filename, current: i + 1, total: documents.length });
 
         try {
           // 1. Lokaler Cache
           if (await isLocalCached(doc.orderId)) {
-            emit({ type: 'INVOICE_SKIP', filename: doc.filename, reason: 'cache' });
+            emit({ type: 'DOCUMENT_SKIP', filename: doc.filename, reason: 'cache' });
             totalDuplicates++;
             continue;
           }
@@ -165,13 +165,13 @@ async function startDownload(config) {
           const exists = await paperless('CHECK_DUPLICATE', paperlessUrl, paperlessToken, { orderId: doc.orderId });
           if (exists) {
             await addLocalCache(doc.orderId);
-            emit({ type: 'INVOICE_SKIP', filename: doc.filename, reason: 'paperless' });
+            emit({ type: 'DOCUMENT_SKIP', filename: doc.filename, reason: 'paperless' });
             totalDuplicates++;
             continue;
           }
 
           // 3. PDF vom Shop laden (Content Script im Tab → Session-Cookies)
-          const fetchResult = await sendToTab(tab.id, { action: 'FETCH_DOCUMENT', url: doc.invoiceUrl }, 45_000);
+          const fetchResult = await sendToTab(tab.id, { action: 'FETCH_DOCUMENT', url: doc.documentUrl ?? doc.invoiceUrl }, 45_000);
           if (fetchResult.error) throw new Error(fetchResult.error);
           if (fetchResult.dataUrl.length < 500) throw new Error('PDF zu klein — kein gültiges Dokument.');
 
@@ -184,11 +184,11 @@ async function startDownload(config) {
           });
 
           await addLocalCache(doc.orderId);
-          emit({ type: 'INVOICE_UPLOADED', filename: doc.filename });
+          emit({ type: 'DOCUMENT_UPLOADED', filename: doc.filename });
           totalUploaded++;
 
         } catch (err) {
-          emit({ type: 'INVOICE_ERROR', filename: doc.filename, message: err.message });
+          emit({ type: 'DOCUMENT_ERROR', filename: doc.filename, message: err.message });
           totalErrors++;
         }
 
@@ -217,7 +217,7 @@ async function startDownload(config) {
 
 // ─── Shop-spezifische Navigationsfunktion für CSD-geschützte Seiten ──────────
 
-async function collectInvoicesViaNavigation(tabId, shopId, dateFrom, dateTo) {
+async function collectDocumentsViaNavigation(tabId, shopId, dateFrom, dateTo) {
   const yearFrom = new Date(dateFrom).getFullYear();
   const yearTo   = new Date(dateTo).getFullYear();
   const all      = [];
@@ -248,10 +248,10 @@ async function collectInvoicesViaNavigation(tabId, shopId, dateFrom, dateTo) {
       }
       if (!ready) throw new Error('Content Script nicht bereit nach 20 Versuchen');
 
-      const result = await sendToTab(tabId, { action: 'GET_INVOICES_PAGE', dateFrom, dateTo }, 45_000);
+      const result = await sendToTab(tabId, { action: 'GET_DOCUMENTS_PAGE', dateFrom, dateTo }, 45_000);
       if (result.error) throw new Error(result.error);
 
-      all.push(...(result.invoices ?? []));
+      all.push(...(result.documents ?? result.invoices ?? []));
       pageUrl = result.nextUrl || null;
       if (pageUrl) await sleep(800 + Math.random() * 400);
     }

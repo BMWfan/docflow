@@ -1,4 +1,4 @@
-window.InvoiceFlowPlugin = (() => {
+window.DocFlowPlugin = (() => {
   const _sleep = ms => new Promise(r => setTimeout(r, ms));
 
   function _fmtDate(d) {
@@ -64,7 +64,7 @@ window.InvoiceFlowPlugin = (() => {
     name: 'PayPal',
     domains: ['www.paypal.com', 'paypal.com'],
 
-    async getInvoices(dateFrom, dateTo) {
+    async getDocuments(dateFrom, dateTo) {
       const from = new Date(dateFrom);
       const to   = new Date(dateTo);
       to.setHours(23, 59, 59, 999);
@@ -98,7 +98,7 @@ window.InvoiceFlowPlugin = (() => {
             orderId:    id,
             date:       orderDate.toISOString(),
             amount,
-            invoiceUrl: href,
+            documentUrl: href,
             filename:   _filename(orderDate, amount, id),
           });
           continue;
@@ -108,12 +108,12 @@ window.InvoiceFlowPlugin = (() => {
         if (btn) {
           const id = `${_fmtDate(orderDate)}-${amount}`;
           // Store selector for background to use with download capture
-          btn.setAttribute('data-invoiceflow-id', id);
+          btn.setAttribute('data-docflow-id', id);
           invoices.push({
             orderId:    id,
             date:       orderDate.toISOString(),
             amount,
-            invoiceUrl: `__PAYPAL_BTN__:${id}`,
+            documentUrl: `__PAYPAL_BTN__:${id}`,
             filename:   _filename(orderDate, amount, id),
           });
         }
@@ -122,11 +122,11 @@ window.InvoiceFlowPlugin = (() => {
       return invoices;
     },
 
-    async fetchInvoice(url) {
+    async fetchDocument(url) {
       if (url.startsWith('__PAYPAL_BTN__')) {
         // Click the marked button and intercept via overridden fetch
         const id  = url.slice('__PAYPAL_BTN__:'.length);
-        const btn = document.querySelector(`[data-invoiceflow-id="${id}"] button, button[data-invoiceflow-id="${id}"]`);
+        const btn = document.querySelector(`[data-docflow-id="${id}"] button, button[data-docflow-id="${id}"]`);
         if (!btn) throw new Error(`PayPal PDF-Button nicht gefunden (${id}).`);
 
         // Intercept the next fetch/XHR for a PDF

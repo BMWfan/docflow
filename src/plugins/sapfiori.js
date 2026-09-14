@@ -127,7 +127,7 @@ window.DocFlowPlugin = (() => {
 
       if (date < from || date > to) continue;
 
-      const invoiceUrl = `${SERVICE_ROOT}/PDFContentSet(Pdfkey='${encodeURIComponent(pdfKey)}',Viewid='${viewId}')/$value?download=X`;
+      const documentUrl = `${SERVICE_ROOT}/PDFContentSet(Pdfkey='${encodeURIComponent(pdfKey)}',Viewid='${viewId}')/$value?download=X`;
 
       console.debug('SAP Dokument erkannt:', {
         viewId,
@@ -139,7 +139,7 @@ window.DocFlowPlugin = (() => {
         orderId: `sap-${viewId}-${pdfKey}`,
         date: date.toISOString(),
         amount: '0.00',
-        invoiceUrl,
+        documentUrl,
         filename: buildFilename(date, viewId, item.Field3 || periodText, pdfKey),
       });
     }

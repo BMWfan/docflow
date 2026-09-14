@@ -1,5 +1,5 @@
 // Microsoft 365 Admin billing (admin.microsoft.com)
-window.InvoiceFlowPlugin = (() => {
+window.DocFlowPlugin = (() => {
   const _sleep = ms => new Promise(r => setTimeout(r, ms));
 
   function _fmtDate(d) {
@@ -71,7 +71,7 @@ window.InvoiceFlowPlugin = (() => {
     name: 'Microsoft 365',
     domains: ['admin.microsoft.com'],
 
-    async getInvoices(dateFrom, dateTo) {
+    async getDocuments(dateFrom, dateTo) {
       const from       = new Date(dateFrom);
       const to         = new Date(dateTo);
       to.setHours(23, 59, 59, 999);
@@ -105,8 +105,8 @@ window.InvoiceFlowPlugin = (() => {
           orderId:    id,
           date:       orderDate.toISOString(),
           amount,
-          // Download requires a POST — store account + invoice ID for fetchInvoice
-          invoiceUrl: `__M365__:${accountId}|${id}`,
+          // Download requires a POST — store account + invoice ID for fetchDocument
+          documentUrl: `__M365__:${accountId}|${id}`,
           filename:   _filename(orderDate, amount, id),
         });
       }
@@ -114,7 +114,7 @@ window.InvoiceFlowPlugin = (() => {
       return invoices;
     },
 
-    async fetchInvoice(url) {
+    async fetchDocument(url) {
       if (!url.startsWith('__M365__:')) {
         const resp = await fetch(url, { credentials: 'include' });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);

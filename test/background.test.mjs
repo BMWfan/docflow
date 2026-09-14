@@ -56,3 +56,24 @@ test('GET_STATUS reports no running job initially', async () => {
   assert.equal(ret, false);
   assert.deepEqual(plain(out), { running: false });
 });
+
+test('progress event names use DOCUMENT terminology in background and popup', () => {
+  for (const rel of ['src/background.js', 'src/popup.js']) {
+    const src = readSource(rel);
+    assert.doesNotMatch(src, /\bINVOICE_[A-Z_]+\b/, rel);
+    assert.doesNotMatch(src, /\bSHOP_INVOICES_FOUND\b/, rel);
+  }
+  const bg = readSource('src/background.js');
+  const popup = readSource('src/popup.js');
+  for (const ev of ['SHOP_DOCUMENTS_FOUND', 'DOCUMENT_PROCESSING', 'DOCUMENT_UPLOADED', 'DOCUMENT_SKIP', 'DOCUMENT_ERROR']) {
+    assert.match(bg, new RegExp(`'${ev}'`), `background emits ${ev}`);
+    assert.match(popup, new RegExp(`case '${ev}'`), `popup handles ${ev}`);
+  }
+});
+
+test('background sends GET_DOCUMENTS_PAGE and accepts legacy invoiceUrl', () => {
+  const bg = readSource('src/background.js');
+  assert.match(bg, /action: 'GET_DOCUMENTS_PAGE'/);
+  assert.doesNotMatch(bg, /GET_INVOICES_PAGE/);
+  assert.match(bg, /doc\.documentUrl \?\? doc\.invoiceUrl/);
+});

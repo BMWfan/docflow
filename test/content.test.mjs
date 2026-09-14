@@ -68,3 +68,52 @@ test('unknown action returns error', async () => {
   const res = await dispatch(sb, { action: 'NOPE' }).response;
   assert.match(res.error, /Unbekannte Aktion: NOPE/);
 });
+
+test('GET_DOCUMENTS prefers getDocuments over legacy getInvoices', async () => {
+  const plugin = legacyPlugin({ async getDocuments() { return [{ orderId: 'new' }]; } });
+  const sb = loadScript('src/content.js', { window: { DocFlowPlugin: plugin } });
+  const res = await dispatch(sb, { action: 'GET_DOCUMENTS' }).response;
+  assert.equal(res.documents[0].orderId, 'new');
+});
+
+test('GET_DOCUMENTS forwards sourceConfig as third argument', async () => {
+  let seen;
+  const plugin = { name: 'x', async getDocuments(from, to, cfg) { seen = cfg; return []; } };
+  const sb = loadScript('src/content.js', { window: { DocFlowPlugin: plugin } });
+  await dispatch(sb, { action: 'GET_DOCUMENTS', dateFrom: 'a', dateTo: 'b', sourceConfig: { servicePath: '/x' } }).response;
+  assert.deepEqual(plain(seen), { servicePath: '/x' });
+});
+
+test('GET_DOCUMENTS_PAGE normalises {documents, nextUrl}', async () => {
+  const plugin = { name: 'x', async getDocumentsFromCurrentPage() { return { documents: [{ orderId: 'p1' }], nextUrl: 'https://n' }; } };
+  const sb = loadScript('src/content.js', { window: { DocFlowPlugin: plugin } });
+  const res = await dispatch(sb, { action: 'GET_DOCUMENTS_PAGE' }).response;
+  assert.equal(res.success, true);
+  assert.equal(res.documents.length, 1);
+  assert.deepEqual(plain(res.invoices), plain(res.documents));
+  assert.equal(res.nextUrl, 'https://n');
+});
+
+test('GET_INVOICES_PAGE alias normalises legacy {invoices}', async () => {
+  const plugin = { name: 'x', async getInvoicesFromCurrentPage() { return { invoices: [{ orderId: 'p1' }], nextUrl: null }; } };
+  const sb = loadScript('src/content.js', { window: { InvoiceFlowPlugin: plugin } });
+  const res = await dispatch(sb, { action: 'GET_INVOICES_PAGE' }).response;
+  assert.equal(res.documents.length, 1);
+  assert.equal(res.nextUrl, null);
+});
+
+test('GET_DOCUMENTS_PAGE reports unsupported plugins', async () => {
+  const sb = loadScript('src/content.js', { window: { DocFlowPlugin: legacyPlugin() } });
+  const { returned, response } = dispatch(sb, { action: 'GET_DOCUMENTS_PAGE' });
+  assert.equal(returned, false);
+  assert.match((await response).error, /nicht unterstützt/);
+});
+
+test('FETCH_DOCUMENT forwards sourceConfig to fetchDocument', async () => {
+  let seen;
+  const plugin = { name: 'x', async fetchDocument(url, cfg) { seen = cfg; return new Blob(['%PDF-'], { type: 'application/pdf' }); } };
+  const sb = loadScript('src/content.js', { window: { DocFlowPlugin: plugin } });
+  const res = await dispatch(sb, { action: 'FETCH_DOCUMENT', url: 'u', sourceConfig: { a: 1 } }).response;
+  assert.equal(res.success, true);
+  assert.deepEqual(plain(seen), { a: 1 });
+});

@@ -187,29 +187,29 @@ function handleProgress(msg) {
       elCurrentItem.textContent = msg.message;
       break;
 
-    case 'SHOP_INVOICES_FOUND':
+    case 'SHOP_DOCUMENTS_FOUND':
       jobTotal += msg.count;
       appendLog('info', '📋', `${shopLabel(msg.shop)}: ${msg.count} Dokument(e) gefunden.`);
       updateProgress();
       break;
 
-    case 'INVOICE_PROCESSING':
+    case 'DOCUMENT_PROCESSING':
       elCurrentItem.textContent = `${msg.current}/${msg.total}: ${msg.filename}`;
       break;
 
-    case 'INVOICE_UPLOADED':
+    case 'DOCUMENT_UPLOADED':
       jobDone++;
       appendLog('ok', '✓', msg.filename);
       updateProgress();
       break;
 
-    case 'INVOICE_SKIP':
+    case 'DOCUMENT_SKIP':
       jobDone++;
       appendLog('skip', '⟳', `${msg.filename} (bereits in ${msg.reason === 'paperless' ? 'Paperless' : 'Cache'})`);
       updateProgress();
       break;
 
-    case 'INVOICE_ERROR':
+    case 'DOCUMENT_ERROR':
       jobDone++;
       appendLog('error', '✗', `${msg.filename}: ${msg.message}`);
       updateProgress();

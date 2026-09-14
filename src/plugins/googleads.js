@@ -1,5 +1,5 @@
 // Google Ads billing (ads.google.com → payments.google.com)
-window.InvoiceFlowPlugin = (() => {
+window.DocFlowPlugin = (() => {
   const _sleep = ms => new Promise(r => setTimeout(r, ms));
 
   function _fmtDate(d) {
@@ -71,7 +71,7 @@ window.InvoiceFlowPlugin = (() => {
     name: 'Google Ads',
     domains: ['ads.google.com', 'payments.google.com'],
 
-    async getInvoices(dateFrom, dateTo) {
+    async getDocuments(dateFrom, dateTo) {
       const from = new Date(dateFrom);
       const to   = new Date(dateTo);
       to.setHours(23, 59, 59, 999);
@@ -104,22 +104,22 @@ window.InvoiceFlowPlugin = (() => {
           const dataUrl = dlEl?.dataset?.url;
           const anchor  = dlCell?.querySelector('a[href]');
 
-          let invoiceUrl;
+          let documentUrl;
           if (dataUrl) {
-            invoiceUrl = `${document.location.origin}${dataUrl}`;
+            documentUrl = `${document.location.origin}${dataUrl}`;
           } else if (anchor?.href) {
-            invoiceUrl = anchor.href;
+            documentUrl = anchor.href;
           } else {
             continue;
           }
 
-          const id = dataUrl?.split('/').pop() || invoiceUrl.split('/').pop().split('?')[0] || `${_fmtDate(orderDate)}-${amount}`;
+          const id = dataUrl?.split('/').pop() || documentUrl.split('/').pop().split('?')[0] || `${_fmtDate(orderDate)}-${amount}`;
 
           invoices.push({
             orderId:    id,
             date:       orderDate.toISOString(),
             amount,
-            invoiceUrl,
+            documentUrl,
             filename:   _filename(orderDate, amount, id),
           });
         }
@@ -131,7 +131,7 @@ window.InvoiceFlowPlugin = (() => {
       return invoices;
     },
 
-    async fetchInvoice(url) {
+    async fetchDocument(url) {
       const resp = await fetch(url, {
         credentials: 'include',
         headers: { Accept: 'application/pdf,*/*' },
