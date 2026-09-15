@@ -608,10 +608,18 @@ window.DocFlowPlugin = (() => {
 
       if (errors.length === categories.length) {
         const cause = (categoryError || errors[0])?.message || 'unbekannter Fehler';
+        // Start-URL zeigt nicht auf ein SAP-Fiori-System (z. B. SuccessFactors
+        // oder ein Portal): dort gibt es keinen /sap/opu/odata-Service.
+        const onFioriPage = /^\/sap\//i.test(window.location?.pathname || '');
+        const notFound    = /HTTP 404/.test(cause);
+        const hint = notFound && !onFioriPage
+          ? ` Die Start-URL öffnet ${window.location?.host || 'eine Seite'}, dort läuft keine SAP-Fiori-App. ` +
+            'Bitte in den Einstellungen die Adresse der Fiori-App mit den Entgeltnachweisen eintragen ' +
+            '(beginnt meist mit https://<SAP-Host>/sap/bc/ui2/flp) und „Zugriff erlauben" klicken.'
+          : ' Bitte Pfad und Mandant in den Einstellungen prüfen oder im SAP-Tab erneut anmelden.';
         throw new Error(
           `SAP-Dokumentliste konnte nicht geladen werden: ${cause}. ` +
-          `Service-Pfad: ${servicePath}, Mandant: ${resolveClient() || 'nicht gesetzt'}. ` +
-          'Bitte Pfad und Mandant in den Einstellungen prüfen oder im SAP-Tab erneut anmelden.'
+          `Service-Pfad: ${servicePath}, Mandant: ${resolveClient() || 'nicht gesetzt'}.${hint}`
         );
       }
 

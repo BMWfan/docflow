@@ -532,3 +532,25 @@ test('fetchDocument adds sap-client from sourceConfig', async () => {
   await plugin.fetchDocument("/s/PDFContentSet(Pdfkey='A',Viewid='B')/$value?download=X", { client: '100' });
   assert.equal(seen, "/s/PDFContentSet(Pdfkey='A',Viewid='B')/$value?download=X&sap-client=100");
 });
+
+test('a start URL outside SAP Fiori (e.g. SuccessFactors) gets a clear hint', async () => {
+  const fetch = makeFetch([]); // everything 404
+  const { plugin } = loadScriptWith({ href: 'https://performancemanager.successfactors.eu/sf/home?company=x', host: 'performancemanager.successfactors.eu', hostname: 'performancemanager.successfactors.eu', origin: 'https://performancemanager.successfactors.eu', pathname: '/sf/home' }, fetch);
+  await assert.rejects(
+    plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/sap/opu/odata/kwp/XSS_PDF_VIEWER_SRV', client: '100' }),
+    /HTTP 404 bei performancemanager\.successfactors\.eu.*öffnet performancemanager\.successfactors\.eu, dort läuft keine SAP-Fiori-App/,
+  );
+});
+
+test('a 404 on a real Fiori page keeps the path/client hint', async () => {
+  const fetch = makeFetch([]);
+  const { plugin } = loadScriptWith({ href: 'https://sap.example.com/sap/bc/ui2/flp?sap-client=100', host: 'sap.example.com', hostname: 'sap.example.com', origin: 'https://sap.example.com', pathname: '/sap/bc/ui2/flp' }, fetch);
+  const err = await plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/falsch' }).catch(e => e);
+  assert.match(err.message, /Pfad und Mandant in den Einstellungen prüfen/);
+  assert.doesNotMatch(err.message, /keine SAP-Fiori-App/);
+});
+
+function loadScriptWith(location, fetch) {
+  const sb = loadScript(REL, { location, fetch });
+  return { plugin: sb.window.DocFlowPlugin };
+}

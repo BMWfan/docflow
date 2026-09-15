@@ -297,7 +297,9 @@ elBtnSave.addEventListener('click', async () => {
   let sapNote = '';
   if (sapConfig) {
     const ok = await notifySapConfig(sapConfig);
-    if (!ok) sapNote = ' SAP: Host-Zugriff fehlt noch — bitte „Zugriff erlauben" klicken.';
+    const warning = sapUrlWarning(sapConfig.startUrl);
+    if (warning) sapNote = ` SAP: ${warning}`;
+    else if (!ok) sapNote = ' SAP: Host-Zugriff fehlt noch — bitte „Zugriff erlauben" klicken.';
     refreshSapStatus(sapConfig.startUrl);
   } else {
     await notifySapConfig(null);
@@ -341,7 +343,25 @@ function showSapStatus(type, text) {
   elSapStatus.textContent = text;
 }
 
+function sapUrlWarning(url) {
+  try {
+    const u = new URL(url);
+    if (/successfactors|sapsf\./i.test(u.host)) {
+      return 'Das ist SuccessFactors, nicht die SAP-Fiori-App. Bitte die Adresse der Seite mit den Entgeltnachweisen eintragen.';
+    }
+    if (!/\/sap\//i.test(u.pathname)) {
+      return 'Die Adresse enthält keinen /sap/-Pfad und ist vermutlich keine SAP-Fiori-App.';
+    }
+  } catch { /* ungültige URL wird anderswo gemeldet */ }
+  return '';
+}
+
 async function refreshSapStatus(url) {
+  const warning = sapUrlWarning(url);
+  if (warning) {
+    showSapStatus('error', warning);
+    return;
+  }
   const ok = await hasHostPermission(url);
   showSapStatus(ok ? 'ok' : 'error', ok ? 'Zugriff erteilt' : 'Zugriff fehlt');
 }
@@ -366,7 +386,9 @@ elBtnSapPerm?.addEventListener('click', async () => {
     // Nur registrieren, wenn die Konfiguration auch gespeichert wurde/wird
     await chrome.storage.sync.set({ sapConfig: cfg });
     const ok = await notifySapConfig(cfg);
-    showSapStatus(ok ? 'ok' : 'error', ok ? 'Zugriff erteilt — SAP-Plugin aktiv' : 'Registrierung fehlgeschlagen');
+    const warning = sapUrlWarning(cfg.startUrl);
+    if (warning) showSapStatus('error', `Zugriff erteilt, aber: ${warning}`);
+    else showSapStatus(ok ? 'ok' : 'error', ok ? 'Zugriff erteilt — SAP-Plugin aktiv' : 'Registrierung fehlgeschlagen');
   } finally {
     elBtnSapPerm.disabled = false;
   }
