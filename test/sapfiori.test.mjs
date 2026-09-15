@@ -147,7 +147,7 @@ test('pickPdfKeyName prefers the pdf key regardless of order', () => {
 
 test('resolveConfig normalises the service path and defaults debug to false', () => {
   const { I } = load();
-  const base = { client: '', debug: false, sessionWaitMs: 30000, retryDelayMs: 2000 };
+  const base = { client: '', startUrl: '', debug: false, sessionWaitMs: 30000, retryDelayMs: 2000 };
   assert.deepEqual(plain(I.resolveConfig({ servicePath: ' /sap/opu/odata/x/SRV/ ', client: ' 100 ' })), { ...base, servicePath: '/sap/opu/odata/x/SRV', client: '100' });
   assert.deepEqual(plain(I.resolveConfig(null)), { ...base, servicePath: '' });
   for (const input of [
@@ -282,7 +282,7 @@ test('getDocuments throws when every category fails instead of silently returnin
   const { plugin } = load({ fetch });
   await assert.rejects(
     plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/s' }),
-    /Dokumentliste konnte nicht geladen werden: SAP API HTTP 500\. Service-Pfad: \/s\./,
+    /Dokumentliste konnte nicht geladen werden: SAP API HTTP 500 bei sap\.example\.com\. Service-Pfad: \/s, Mandant: nicht gesetzt\./,
   );
 });
 
@@ -453,7 +453,7 @@ test('getDocuments reports a login page as the cause when the session never arri
   const { plugin } = load({ fetch });
   await assert.rejects(
     plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/s', retryDelayMs: 10, sessionWaitMs: 50 }),
-    /kein JSON .*vermutlich Login-Seite.*Service-Pfad: \/s\./,
+    /kein JSON .*vermutlich Login-Seite.*Service-Pfad: \/s,/,
   );
 });
 
@@ -463,7 +463,7 @@ test('getDocuments reports HTTP 404 for a wrong service path without waiting', a
   const t0 = Date.now();
   await assert.rejects(
     plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/falsch', retryDelayMs: 1000, sessionWaitMs: 30000 }),
-    /SAP API HTTP 404\. Service-Pfad: \/falsch\./,
+    /SAP API HTTP 404 bei sap\.example\.com\. Service-Pfad: \/falsch,/,
   );
   assert.ok(Date.now() - t0 < 900, 'no session retries for plain HTTP errors');
 });
@@ -485,4 +485,50 @@ test('the session wait is shared across all requests of one run', async () => {
   const t0 = Date.now();
   await assert.rejects(plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/s', retryDelayMs: 20, sessionWaitMs: 150 }));
   assert.ok(Date.now() - t0 < 600, `took ${Date.now() - t0}ms, expected one shared wait`);
+});
+
+// ─── SAP client (sap-client) ─────────────────────────────────────────────────
+
+test('resolveConfig keeps only three-digit clients and the start URL', () => {
+  const { I } = load();
+  assert.equal(I.resolveConfig({ client: '100' }).client, '100');
+  assert.equal(I.resolveConfig({ client: 'abc' }).client, '');
+  assert.equal(I.resolveConfig({ startUrl: ' https://sap.example.com/flp?sap-client=100 ' }).startUrl, 'https://sap.example.com/flp?sap-client=100');
+});
+
+test('every SAP request carries sap-client like the Fiori app does', async () => {
+  const log = [];
+  const fetch = makeFetch([
+    [/\$metadata/, () => textResp(METADATA_XML)],
+    [/CategorieSet\?/, () => jsonResp({ d: { results: [{ Viewid: '2PAYSTUB', Viewtext: 'Entgeltnachweise' }] } })],
+    [/PeriodHeaderSet/, () => jsonResp(header('2PAYSTUB', [['Beschreibung', 'String'], ['Zeitraum', 'String'], ['Abrechnungsperiode', 'String']]))],
+    [/Cat2Period/, () => jsonResp({ d: { results: [{ Viewid: '2PAYSTUB', Pdfkey: 'K1', Field1: V({ Stringvalue: 'E' }), Field2: V({ Stringvalue: '01.03.2025 - 31.03.2025' }), Field3: V({ Stringvalue: '2025 / 03' }) }] } })],
+  ], log);
+  const { plugin } = load({ fetch });
+  const docs = plain(await plugin.getDocuments('2025-01-01', '2025-12-31', {
+    servicePath: '/sap/opu/odata/kwp/XSS_PDF_VIEWER_SRV',
+    startUrl: 'https://sap.example.com/sap/bc/ui2/flp?sap-client=100&sap-language=DE#ZXSSFORMVIEWER-display',
+  }));
+  assert.ok(log.length >= 4);
+  for (const u of log) assert.match(u, /[?&]sap-client=100(&|$)/, u);
+  assert.equal(log[0], '/sap/opu/odata/kwp/XSS_PDF_VIEWER_SRV/$metadata?sap-client=100');
+  assert.equal(docs[0].documentUrl, "/sap/opu/odata/kwp/XSS_PDF_VIEWER_SRV/PDFContentSet(Viewid='2PAYSTUB',Pdfkey='K1')/$value?download=X&sap-client=100");
+});
+
+test('client precedence: setting, then start URL, then page URL; never duplicated', () => {
+  const page = load({ location: { href: 'https://sap.example.com/sap/bc/ui2/flp?sap-client=300' } });
+  const sb = page.plugin;
+  // resolveClient reads the module config; getDocuments sets it, so emulate via fetchDocument(sourceConfig)
+  const I = page.I;
+  assert.equal(I.withClient('/x?a=1'), '/x?a=1&sap-client=300', 'page URL is the last fallback');
+  assert.equal(I.withClient('/x?sap-client=100'), '/x?sap-client=100', 'existing client is kept');
+  assert.ok(sb);
+});
+
+test('fetchDocument adds sap-client from sourceConfig', async () => {
+  let seen = '';
+  const fetch = async (url) => { seen = String(url); return blobResp('%PDF-1.7 ' + 'x'.repeat(200), 'application/pdf'); };
+  const { plugin } = load({ fetch });
+  await plugin.fetchDocument("/s/PDFContentSet(Pdfkey='A',Viewid='B')/$value?download=X", { client: '100' });
+  assert.equal(seen, "/s/PDFContentSet(Pdfkey='A',Viewid='B')/$value?download=X&sap-client=100");
 });

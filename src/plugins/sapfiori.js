@@ -47,9 +47,11 @@ window.DocFlowPlugin = (() => {
     }
     servicePath = servicePath.replace(/[?#].*$/, '').replace(/\/\$metadata$/i, '').replace(/\/+$/, '');
     if (servicePath && !servicePath.startsWith('/')) servicePath = `/${servicePath}`;
+    const client = String(src.client || '').trim();
     return {
       servicePath,
-      client:        String(src.client || '').trim(),
+      client:        /^\d{3}$/.test(client) ? client : '',
+      startUrl:      String(src.startUrl || '').trim(),
       debug:         Boolean(src.debug),
       sessionWaitMs: num(src.sessionWaitMs, 30000),
       retryDelayMs:  num(src.retryDelayMs, 2000),
@@ -328,6 +330,33 @@ window.DocFlowPlugin = (() => {
 
   // ─── HTTP ──────────────────────────────────────────────────────────────────
 
+  /**
+   * SAP-Mandant wie die Fiori-App mitsenden (UI5 hängt sap-client an jede
+   * OData-Anfrage). Ohne Mandant nimmt SAP den Standardmandanten, in dem der
+   * Service meist nicht registriert ist → HTTP 404 "No service found".
+   * Quelle: Einstellung → sap-client der Start-URL → sap-client der Seite.
+   */
+  function resolveClient() {
+    if (cfg.client) return cfg.client;
+    for (const candidate of [cfg.startUrl, window.location?.href]) {
+      try {
+        const c = new URL(String(candidate || '')).searchParams.get('sap-client');
+        if (/^\d{3}$/.test(c || '')) return c;
+      } catch { /* keine gültige URL */ }
+    }
+    return '';
+  }
+
+  function withClient(url) {
+    const client = resolveClient();
+    if (!client || /[?&]sap-client=/.test(url)) return url;
+    return `${url}${url.includes('?') ? '&' : '?'}sap-client=${client}`;
+  }
+
+  function hostOf(url) {
+    try { return new URL(url, window.location.origin).host; } catch { return '?'; }
+  }
+
   /** Fehler mit Art: 'login' (Sitzung fehlt), 'http', 'format'. */
   function sapError(kind, message) {
     const err = new Error(message);
@@ -343,7 +372,8 @@ window.DocFlowPlugin = (() => {
     }
   }
 
-  async function fetchJson(url) {
+  async function fetchJson(rawUrl) {
+    const url  = withClient(rawUrl);
     const resp = await fetch(url, {
       credentials: 'include',
       headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
@@ -352,9 +382,9 @@ window.DocFlowPlugin = (() => {
       throw sapError('login', `Anfrage zur Anmeldung umgeleitet (${new URL(resp.url).host})`);
     }
     if (resp.status === 401 || resp.status === 403) {
-      throw sapError('login', `SAP API HTTP ${resp.status}`);
+      throw sapError('login', `SAP API HTTP ${resp.status} bei ${hostOf(url)}`);
     }
-    if (!resp.ok) throw sapError('http', `SAP API HTTP ${resp.status}`);
+    if (!resp.ok) throw sapError('http', `SAP API HTTP ${resp.status} bei ${hostOf(url)}`);
 
     const contentType = String(resp.headers?.get?.('content-type') || '').toLowerCase();
     const text = await resp.text();
@@ -391,11 +421,12 @@ window.DocFlowPlugin = (() => {
     }
   }
 
-  async function fetchText(url) {
+  async function fetchText(rawUrl) {
+    const url  = withClient(rawUrl);
     const resp = await fetch(url, { credentials: 'include' });
     if (isForeignRedirect(resp)) throw sapError('login', `Anfrage zur Anmeldung umgeleitet (${new URL(resp.url).host})`);
-    if (resp.status === 401 || resp.status === 403) throw sapError('login', `SAP API HTTP ${resp.status}`);
-    if (!resp.ok) throw sapError('http', `SAP API HTTP ${resp.status}`);
+    if (resp.status === 401 || resp.status === 403) throw sapError('login', `SAP API HTTP ${resp.status} bei ${hostOf(url)}`);
+    if (!resp.ok) throw sapError('http', `SAP API HTTP ${resp.status} bei ${hostOf(url)}`);
     return resp.text();
   }
 
@@ -495,7 +526,7 @@ window.DocFlowPlugin = (() => {
         const v = item[k] ?? (/view|categ/i.test(k) ? category.id : '');
         return `${k}=${odataLiteral(v)}`;
       });
-      const documentUrl = `${servicePath}/${model.streamSet}(${keyParts.join(',')})/$value?download=X`;
+      const documentUrl = withClient(`${servicePath}/${model.streamSet}(${keyParts.join(',')})/$value?download=X`);
 
       const orderId = sanitize(`sap-${category.id}-${pdfKey}`) || `sap-${Date.now()}`;
 
@@ -579,7 +610,8 @@ window.DocFlowPlugin = (() => {
         const cause = (categoryError || errors[0])?.message || 'unbekannter Fehler';
         throw new Error(
           `SAP-Dokumentliste konnte nicht geladen werden: ${cause}. ` +
-          `Service-Pfad: ${servicePath}. Bitte Pfad in den Einstellungen prüfen oder im SAP-Tab erneut anmelden.`
+          `Service-Pfad: ${servicePath}, Mandant: ${resolveClient() || 'nicht gesetzt'}. ` +
+          'Bitte Pfad und Mandant in den Einstellungen prüfen oder im SAP-Tab erneut anmelden.'
         );
       }
 
@@ -587,9 +619,10 @@ window.DocFlowPlugin = (() => {
       return all;
     },
 
-    async fetchDocument(url, sourceConfig) {
+    async fetchDocument(rawUrl, sourceConfig) {
       if (sourceConfig) cfg = resolveConfig(sourceConfig);
 
+      const url  = withClient(rawUrl);
       const resp = await fetch(url, {
         credentials: 'include',
         headers: { Accept: 'application/pdf, */*' },
@@ -611,7 +644,7 @@ window.DocFlowPlugin = (() => {
     // Nur für Unit-Tests (reine Funktionen)
     _internals: {
       analyzeMetadata, parseSapDate, odataLiteral, buildFilename, sanitize,
-      resolveConfig, pickPdfKeyName, fieldValue, describeRow, calendarDay,
+      resolveConfig, pickPdfKeyName, fieldValue, describeRow, calendarDay, withClient, resolveClient,
       DEFAULT_MODEL, DEFAULT_SERVICE_PATH, CATALOG_URL,
     },
   };
