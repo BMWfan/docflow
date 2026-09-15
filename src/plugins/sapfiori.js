@@ -78,9 +78,13 @@ window.DocFlowPlugin = (() => {
     let m;
 
     // OData V2 JSON: /Date(1706659200000)/ oder /Date(1706659200000+0000)/
+    // SAP liefert Kalendertage als UTC-Mitternacht → als lokalen Tag übernehmen.
     if ((m = t.match(/\/Date\((-?\d+)(?:[+-]\d+)?\)\//))) {
-      const d = new Date(Number(m[1]));
-      return validDate(d) ? { start: d, end: d } : null;
+      const ms = Number(m[1]);
+      if (!(ms > 0)) return null; // /Date(0)/ = leerer SAP-Platzhalter
+      const utc = new Date(ms);
+      const d = localDate(utc.getUTCFullYear(), utc.getUTCMonth() + 1, utc.getUTCDate());
+      return d ? { start: d, end: d } : null;
     }
 
     // DD.MM.YYYY - DD.MM.YYYY
@@ -213,6 +217,98 @@ window.DocFlowPlugin = (() => {
     };
   }
 
+  function calendarDay(value) {
+    const m = String(value ?? '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    const d = new Date(value);
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  }
+
+  function formatDotted(date) {
+    return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()}`;
+  }
+
+  /**
+   * Liest ein Perioden-Feld. XSS_PDF_VIEWER_SRV liefert Field1..Field12 als
+   * ComplexType "Value" { Stringvalue, Datevalue, Integervalue, Decimalvalue,
+   * Timevalue }; welcher Teil gilt, steht in PeriodHeaderSet (FieldNType).
+   * Einfache String-Felder (andere Services) werden direkt übernommen.
+   */
+  function fieldValue(raw, type) {
+    if (raw == null) return '';
+    if (typeof raw !== 'object') return String(raw).trim();
+    const t = String(type || '').toLowerCase();
+    const dateText = () => {
+      const p = parseSapDate(raw.Datevalue);
+      return p ? formatDotted(p.start) : '';
+    };
+    if (t === 'date')    return dateText();
+    if (t === 'integer') return Number(raw.Integervalue) ? String(raw.Integervalue) : '';
+    if (t === 'decimal') return Number(raw.Decimalvalue) ? String(raw.Decimalvalue) : '';
+    const str = String(raw.Stringvalue ?? '').trim();
+    if (str || t === 'string') return str;
+    return dateText();
+  }
+
+  /**
+   * Bestimmt aus einer Perioden-Zeile Datum, Zeitraum-Text und Perioden-Label.
+   * descriptors: [{ name:'Field2', desc:'Zeitraum', type:'String' }, …] oder null.
+   */
+  function describeRow(item, descriptors) {
+    const row = item || {};
+    const plainNames = Object.keys(row).filter(k => /^(Field\d+|Period|Text|Date)$/.test(k));
+    const desc = descriptors && descriptors.length
+      ? descriptors
+      : plainNames.map(name => ({ name, desc: '', type: '' }));
+
+    const fields = desc
+      .map(d => ({ ...d, value: fieldValue(row[d.name], d.type) }))
+      .filter(f => f.value);
+    const byDesc = re => fields.find(f => re.test(f.desc));
+
+    let parsed = null;
+    let periodText = '';
+
+    // 1) Zeitraum als Text "DD.MM.YYYY - DD.MM.YYYY"
+    const range = fields.find(f => /\d{1,2}\.\d{1,2}\.\d{4}\s*[-–]\s*\d{1,2}\.\d{1,2}\.\d{4}/.test(f.value));
+    if (range) {
+      parsed = parseSapDate(range.value);
+      periodText = range.value;
+    }
+
+    // 2) getrennte Von-/Bis-Felder
+    if (!parsed) {
+      const fromF = byDesc(/\b(von|beginn|start|ab|from)\b/i);
+      const toF   = byDesc(/\b(bis|ende|end|to)\b/i);
+      const ps = fromF ? parseSapDate(fromF.value) : null;
+      const pe = toF   ? parseSapDate(toF.value)   : null;
+      if (ps || pe) {
+        parsed = { start: (ps || pe).start, end: (pe || ps).end };
+        periodText = [fromF?.value, toF?.value].filter(Boolean).join(' - ');
+      }
+    }
+
+    // 3) erstes Datumsfeld, dann erster parsebarer Text (nie Zahlenfelder)
+    if (!parsed) {
+      const candidates = [
+        ...fields.filter(f => /date/i.test(f.type)),
+        ...fields.filter(f => !f.type || /string/i.test(f.type)),
+      ];
+      for (const f of candidates) {
+        const p = parseSapDate(f.value);
+        if (p) { parsed = p; periodText = f.value; break; }
+      }
+    }
+
+    const labelField =
+      byDesc(/periode|period/i) ||
+      fields.find(f => /^\d{4}\s*\/\s*\d{1,2}$/.test(f.value));
+    const legacyLabel = typeof row.Field3 === 'string' ? row.Field3.trim() : '';
+    const label = labelField?.value || legacyLabel || periodText || fields[0]?.value || '';
+
+    return { parsed, periodText: periodText || fields[0]?.value || '', label };
+  }
+
   /** Welcher Schlüssel des Stream-Sets identifiziert das PDF (nicht die Kategorie)? */
   function pickPdfKeyName(streamKeys) {
     return streamKeys.find(k => /pdf/i.test(k))
@@ -279,27 +375,45 @@ window.DocFlowPlugin = (() => {
     const data = await fetchJson(`${servicePath}/${model.categorySet}?$format=json`);
     const results = data?.d?.results || data?.value || [];
     return results
+      .filter(item => item.Download !== false && item.Visible !== false)
       .map(item => ({
         id:    item.Viewid || item.Category || item.Id || item.ID,
-        title: item.Title || item.Name || item.Description || item.Text || item.Viewid,
+        title: item.Viewtext || item.Title || item.Name || item.Description || item.Text || item.Viewid,
       }))
       .filter(item => item.id);
+  }
+
+  /** Feldbeschriftungen/-typen je Kategorie (PeriodHeaderSet), sonst null. */
+  async function getFieldDescriptors(servicePath, categoryId) {
+    try {
+      const data = await fetchJson(`${servicePath}/PeriodHeaderSet(${odataLiteral(categoryId)})?$format=json`);
+      const h = data?.d ?? data;
+      if (!h || typeof h !== 'object') return null;
+      const list = [];
+      for (let i = 1; i <= 12; i++) {
+        const name = `Field${i}`;
+        list.push({ name, desc: String(h[`${name}Desc`] || ''), type: String(h[`${name}Type`] || '') });
+      }
+      return list.some(d => d.desc || d.type) ? list : null;
+    } catch {
+      return null;
+    }
   }
 
   async function getDocumentsForCategory(servicePath, model, category, from, to) {
     const url  = `${servicePath}/${model.categorySet}(${odataLiteral(category.id)})/${model.periodNav}?$format=json`;
     const data = await fetchJson(url);
     const rows = data?.d?.results || data?.value || [];
-    const pdfKeyName = pickPdfKeyName(model.streamKeys);
-    const documents  = [];
+    const pdfKeyName  = pickPdfKeyName(model.streamKeys);
+    const descriptors = rows.length ? await getFieldDescriptors(servicePath, category.id) : null;
+    const documents   = [];
 
     for (const item of rows) {
       const pdfKey = item?.[pdfKeyName];
       if (!pdfKey) continue;
 
-      const periodText = String(item.Field2 || item.Field1 || item.Period || item.Text || '').trim();
-      const parsed     = parseSapDate(periodText) || parseSapDate(item.Field3) || parseSapDate(item.Date);
-      const date       = parsed ? (parsed.end || parsed.start) : null;
+      const { parsed, periodText, label } = describeRow(item, descriptors);
+      const date = parsed ? (parsed.end || parsed.start) : null;
 
       // Datierte Dokumente werden gefiltert; undatierte bleiben drin
       // (Paperless erkennt das Datum aus dem PDF-Inhalt).
@@ -319,7 +433,7 @@ window.DocFlowPlugin = (() => {
         date:         date ? date.toISOString() : null,
         amount:       '0.00',
         documentUrl,
-        filename:     buildFilename(date, category.title || category.id, item.Field3 || periodText, orderId),
+        filename:     buildFilename(date, category.title || category.id, label, orderId),
         category:     category.title || String(category.id),
         documentType: 'sap',
         source:       'sapfiori',
@@ -355,8 +469,11 @@ window.DocFlowPlugin = (() => {
     async getDocuments(dateFrom, dateTo, sourceConfig) {
       cfg = resolveConfig(sourceConfig);
 
-      const from = new Date(dateFrom);
-      const to   = new Date(dateTo);
+      // "YYYY-MM-DD" aus dem Popup als lokale Kalendertage lesen: new Date()
+      // würde UTC-Mitternacht liefern und in Deutschland den ersten Tag, in
+      // westlichen Zeitzonen den letzten Tag des Zeitraums abschneiden.
+      const from = calendarDay(dateFrom);
+      const to   = calendarDay(dateTo);
       to.setHours(23, 59, 59, 999);
 
       const servicePath = cfg.servicePath || await discoverServicePath();
@@ -415,7 +532,8 @@ window.DocFlowPlugin = (() => {
     // Nur für Unit-Tests (reine Funktionen)
     _internals: {
       analyzeMetadata, parseSapDate, odataLiteral, buildFilename, sanitize,
-      resolveConfig, pickPdfKeyName, DEFAULT_MODEL, DEFAULT_SERVICE_PATH, CATALOG_URL,
+      resolveConfig, pickPdfKeyName, fieldValue, describeRow, calendarDay,
+      DEFAULT_MODEL, DEFAULT_SERVICE_PATH, CATALOG_URL,
     },
   };
 })();

@@ -94,11 +94,14 @@ test('parseSapDate: YYYYMMDD and YYYY-MM-DD', () => {
   assert.equal(I.parseSapDate('2025-01-31T00:00:00').end.getMonth(), 0);
 });
 
-test('parseSapDate: /Date(ms)/ JSON format', () => {
+test('parseSapDate: /Date(ms)/ JSON format keeps the calendar day and ignores /Date(0)/', () => {
   const { I } = load();
   const ms = Date.UTC(2025, 0, 31);
-  assert.equal(I.parseSapDate(`/Date(${ms})/`).start.getTime(), ms);
-  assert.equal(I.parseSapDate(`/Date(${ms}+0000)/`).start.getTime(), ms);
+  for (const text of [`/Date(${ms})/`, `/Date(${ms}+0000)/`]) {
+    const d = I.parseSapDate(text).start;
+    assert.deepEqual([d.getFullYear(), d.getMonth(), d.getDate()], [2025, 0, 31]);
+  }
+  assert.equal(I.parseSapDate('/Date(0)/'), null);
 });
 
 test('parseSapDate: garbage and invalid calendar dates return null', () => {
@@ -319,4 +322,99 @@ test('fetchDocument rejects tiny blobs and HTTP errors', async () => {
   await assert.rejects(load({ fetch: small }).plugin.fetchDocument('/x'), /zu klein/);
   const err = async () => blobResp('', 'application/pdf', 401);
   await assert.rejects(load({ fetch: err }).plugin.fetchDocument('/x'), /HTTP 401/);
+});
+
+// ─── Real XSS_PDF_VIEWER_SRV shape: Field1..12 are ComplexType "Value" ──────
+// Structure taken from a live service; all values below are invented.
+
+const V = (o = {}) => ({
+  __metadata: { type: 'KWP_XSS_PDF_VIEWER_SRV.Value' },
+  Integervalue: 0, Stringvalue: '', Datevalue: null, Timevalue: 'PT00H00M00S', Decimalvalue: '0.000', ...o,
+});
+const odataDate = (y, m, d) => `/Date(${Date.UTC(y, m - 1, d)})/`;
+const header = (id, fields) => {
+  const h = { Viewid: id };
+  for (let i = 1; i <= 12; i++) { h[`Field${i}Desc`] = ''; h[`Field${i}Type`] = ''; h[`Field${i}Dev`] = '00'; }
+  fields.forEach(([desc, type], i) => { h[`Field${i + 1}Desc`] = desc; h[`Field${i + 1}Type`] = type; });
+  return { d: h };
+};
+const emptyFields = n => Object.fromEntries(Array.from({ length: 12 - n }, (_, i) => [`Field${n + i + 1}`, V()]));
+
+test('fieldValue reads the part selected by the field type', () => {
+  const { I } = load();
+  assert.equal(I.fieldValue(V({ Stringvalue: ' 2025 / 01 ' }), 'String'), '2025 / 01');
+  assert.equal(I.fieldValue(V({ Stringvalue: 'x', Datevalue: odataDate(2025, 3, 15) }), 'Date'), '15.03.2025');
+  assert.equal(I.fieldValue(V({ Datevalue: '/Date(0)/' }), 'Date'), '');
+  assert.equal(I.fieldValue(V({ Integervalue: 42 }), 'Integer'), '42');
+  assert.equal(I.fieldValue(V(), 'Integer'), '');
+  assert.equal(I.fieldValue('plain text', ''), 'plain text');
+  assert.equal(I.fieldValue(V({ Datevalue: odataDate(2024, 12, 1) }), ''), '01.12.2024');
+});
+
+test('describeRow never turns number fields into dates', () => {
+  const { I } = load();
+  const row = { Field1: V({ Stringvalue: 'Meldung' }), Field2: V({ Integervalue: 20250101 }) };
+  const r = I.describeRow(row, [{ name: 'Field1', desc: 'Beschreibung', type: 'String' }, { name: 'Field2', desc: 'Meldungsnummer', type: 'Integer' }]);
+  assert.equal(r.parsed, null);
+});
+
+test('getDocuments handles complex Value fields: payslips (Zeitraum text) and DEÜV (Von/Bis dates)', async () => {
+  const log = [];
+  const fetch = makeFetch([
+    [/\$metadata$/, () => textResp(METADATA_XML)],
+    [/CategorieSet\?/, () => jsonResp({ d: { results: [
+      { Viewid: '2PAYSTUB', Viewtext: 'Entgeltnachweise', Download: true, Visible: true },
+      { Viewid: '4DEUEV', Viewtext: 'DEUV', Download: true, Visible: true },
+      { Viewid: '9HIDDEN', Viewtext: 'Versteckt', Download: false, Visible: true },
+    ] } })],
+    [/PeriodHeaderSet\('2PAYSTUB'\)/, () => jsonResp(header('2PAYSTUB', [['Beschreibung', 'String'], ['Zeitraum', 'String'], ['Abrechnungsperiode', 'String']]))],
+    [/PeriodHeaderSet\('4DEUEV'\)/, () => jsonResp(header('4DEUEV', [['Beschreibung', 'String'], ['Von', 'Date'], ['Bis', 'Date'], ['Jahr der Meldung', 'Integer'], ['Meldungsnummer', 'Integer']]))],
+    [/CategorieSet\('2PAYSTUB'\)\/Cat2Period/, () => jsonResp({ d: { results: [
+      { Viewid: '2PAYSTUB', Pdfkey: 'AAAABBBBCCCC0001', Field1: V({ Stringvalue: 'Entgeltnachweis' }), Field2: V({ Stringvalue: '01.03.2025 - 31.03.2025' }), Field3: V({ Stringvalue: '2025 / 03' }), ...emptyFields(3) },
+      { Viewid: '2PAYSTUB', Pdfkey: 'AAAABBBBCCCC0002', Field1: V({ Stringvalue: 'Entgeltnachweis' }), Field2: V({ Stringvalue: '01.12.2023 - 31.12.2023' }), Field3: V({ Stringvalue: '2023 / 12' }), ...emptyFields(3) },
+    ] } })],
+    [/CategorieSet\('4DEUEV'\)\/Cat2Period/, () => jsonResp({ d: { results: [
+      { Viewid: '4DEUEV', Pdfkey: 'DDDDEEEEFFFF0001', Field1: V({ Stringvalue: 'Jahresmeldung', Datevalue: odataDate(2025, 1, 1) }), Field2: V({ Datevalue: odataDate(2025, 1, 1) }), Field3: V({ Datevalue: odataDate(2025, 12, 31) }), Field4: V({ Integervalue: 2025 }), Field5: V({ Integervalue: 20250101 }), ...emptyFields(5) },
+    ] } })],
+    [/9HIDDEN/, () => { throw new Error('non-downloadable category must not be queried'); }],
+  ], log);
+
+  const { plugin } = load({ fetch });
+  const docs = plain(await plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/sap/opu/odata/kwp/XSS_PDF_VIEWER_SRV' }));
+
+  assert.equal(docs.length, 2, 'out-of-range payslip filtered, hidden category skipped');
+  const [pay, deuev] = docs;
+
+  assert.equal(pay.orderId, 'sap-2PAYSTUB-AAAABBBBCCCC0001');
+  assert.equal(pay.category, 'Entgeltnachweise');
+  assert.equal(pay.filename, '20250331_sap_Entgeltnachweise_2025_03_sap-2PAYSTUB-AAAABBBBCCCC0001.pdf');
+  assert.doesNotMatch(pay.filename, /object/i);
+  assert.equal(pay.meta.period, '01.03.2025 - 31.03.2025');
+  const payDate = new Date(pay.date);
+  assert.deepEqual([payDate.getFullYear(), payDate.getMonth(), payDate.getDate()], [2025, 2, 31]);
+  assert.equal(pay.documentUrl, "/sap/opu/odata/kwp/XSS_PDF_VIEWER_SRV/PDFContentSet(Viewid='2PAYSTUB',Pdfkey='AAAABBBBCCCC0001')/$value?download=X");
+
+  assert.equal(deuev.category, 'DEUV');
+  assert.equal(deuev.meta.period, '01.01.2025 - 31.12.2025');
+  assert.ok(deuev.filename.startsWith('20251231_sap_DEUV_'), deuev.filename);
+  assert.doesNotMatch(deuev.filename, /object/i);
+
+  assert.ok(log.some(u => u.includes("PeriodHeaderSet('2PAYSTUB')")));
+});
+
+test('date range boundaries are inclusive local calendar days', async () => {
+  const fetch = makeFetch([
+    [/\$metadata$/, () => textResp(METADATA_XML)],
+    [/CategorieSet\?/, () => jsonResp({ d: { results: [{ Viewid: '6CERTIFI', Viewtext: 'Bescheinigungen' }] } })],
+    [/PeriodHeaderSet/, () => jsonResp(header('6CERTIFI', [['Bescheinigung', 'String'], ['Datum', 'Date']]))],
+    [/Cat2Period/, () => jsonResp({ d: { results: [
+      { Viewid: '6CERTIFI', Pdfkey: 'FIRSTDAY', Field1: V({ Stringvalue: 'A' }), Field2: V({ Datevalue: odataDate(2025, 1, 1) }) },
+      { Viewid: '6CERTIFI', Pdfkey: 'LASTDAY',  Field1: V({ Stringvalue: 'B' }), Field2: V({ Datevalue: odataDate(2025, 12, 31) }) },
+      { Viewid: '6CERTIFI', Pdfkey: 'BEFORE',   Field1: V({ Stringvalue: 'C' }), Field2: V({ Datevalue: odataDate(2024, 12, 31) }) },
+      { Viewid: '6CERTIFI', Pdfkey: 'AFTER',    Field1: V({ Stringvalue: 'D' }), Field2: V({ Datevalue: odataDate(2026, 1, 1) }) },
+    ] } })],
+  ]);
+  const { plugin } = load({ fetch });
+  const docs = plain(await plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/s' }));
+  assert.deepEqual(docs.map(d => d.meta.pdfKey).sort(), ['FIRSTDAY', 'LASTDAY']);
 });
