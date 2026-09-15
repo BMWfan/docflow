@@ -39,10 +39,20 @@ window.DocFlowPlugin = (() => {
 
   function resolveConfig(sourceConfig) {
     const src = sourceConfig && typeof sourceConfig === 'object' ? sourceConfig : {};
+    const num = (v, d) => (Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : d);
+    let servicePath = String(src.servicePath || '').trim();
+    // Volle URL eingefügt? Dann nur den Pfad verwenden (Anfragen laufen same-origin).
+    if (/^https?:\/\//i.test(servicePath)) {
+      try { servicePath = new URL(servicePath).pathname; } catch { /* unverändert */ }
+    }
+    servicePath = servicePath.replace(/[?#].*$/, '').replace(/\/\$metadata$/i, '').replace(/\/+$/, '');
+    if (servicePath && !servicePath.startsWith('/')) servicePath = `/${servicePath}`;
     return {
-      servicePath: String(src.servicePath || '').trim().replace(/\/+$/, ''),
-      client:      String(src.client || '').trim(),
-      debug:       Boolean(src.debug),
+      servicePath,
+      client:        String(src.client || '').trim(),
+      debug:         Boolean(src.debug),
+      sessionWaitMs: num(src.sessionWaitMs, 30000),
+      retryDelayMs:  num(src.retryDelayMs, 2000),
     };
   }
 
@@ -318,18 +328,74 @@ window.DocFlowPlugin = (() => {
 
   // ─── HTTP ──────────────────────────────────────────────────────────────────
 
+  /** Fehler mit Art: 'login' (Sitzung fehlt), 'http', 'format'. */
+  function sapError(kind, message) {
+    const err = new Error(message);
+    err.kind = kind;
+    return err;
+  }
+
+  function isForeignRedirect(resp) {
+    try {
+      return Boolean(resp.redirected && resp.url && new URL(resp.url).origin !== window.location.origin);
+    } catch {
+      return false;
+    }
+  }
+
   async function fetchJson(url) {
     const resp = await fetch(url, {
       credentials: 'include',
       headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
     });
-    if (!resp.ok) throw new Error(`SAP API HTTP ${resp.status}`);
-    return resp.json();
+    if (isForeignRedirect(resp)) {
+      throw sapError('login', `Anfrage zur Anmeldung umgeleitet (${new URL(resp.url).host})`);
+    }
+    if (resp.status === 401 || resp.status === 403) {
+      throw sapError('login', `SAP API HTTP ${resp.status}`);
+    }
+    if (!resp.ok) throw sapError('http', `SAP API HTTP ${resp.status}`);
+
+    const contentType = String(resp.headers?.get?.('content-type') || '').toLowerCase();
+    const text = await resp.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      const looksHtml = contentType.includes('html') || /^\s*</.test(text);
+      throw sapError(looksHtml ? 'login' : 'format',
+        `SAP-Antwort ist kein JSON (${contentType || 'ohne Content-Type'})${looksHtml ? ' — vermutlich Login-Seite' : ''}`);
+    }
+  }
+
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  /**
+   * Führt fn aus und wiederholt es, solange SAP "nicht angemeldet" meldet.
+   * Beim Öffnen des Tabs läuft die SSO-Anmeldung (SAML/Azure AD) oft noch,
+   * während das Content Script schon aktiv ist.
+   */
+  // Gemeinsame Frist für den ganzen Lauf, damit mehrere Anfragen zusammen
+  // nicht länger warten als der Background dem Tab Zeit gibt.
+  let sessionDeadline = 0;
+
+  async function withSession(fn) {
+    const deadline = sessionDeadline || Date.now() + cfg.sessionWaitMs;
+    for (;;) {
+      try {
+        return await fn();
+      } catch (err) {
+        if (err?.kind !== 'login' || Date.now() + cfg.retryDelayMs > deadline) throw err;
+        debug('Warte auf SAP-Anmeldung:', err.message);
+        await sleep(cfg.retryDelayMs);
+      }
+    }
   }
 
   async function fetchText(url) {
     const resp = await fetch(url, { credentials: 'include' });
-    if (!resp.ok) throw new Error(`SAP API HTTP ${resp.status}`);
+    if (isForeignRedirect(resp)) throw sapError('login', `Anfrage zur Anmeldung umgeleitet (${new URL(resp.url).host})`);
+    if (resp.status === 401 || resp.status === 403) throw sapError('login', `SAP API HTTP ${resp.status}`);
+    if (!resp.ok) throw sapError('http', `SAP API HTTP ${resp.status}`);
     return resp.text();
   }
 
@@ -358,7 +424,13 @@ window.DocFlowPlugin = (() => {
 
   async function loadModel(servicePath) {
     try {
-      const xml = await fetchText(`${servicePath}/$metadata`);
+      const xml = await withSession(async () => {
+        const text = await fetchText(`${servicePath}/$metadata`);
+        if (!/<EntityType\b/i.test(text) && /<html\b/i.test(text)) {
+          throw sapError('login', '$metadata lieferte eine HTML-Seite — vermutlich Login-Seite');
+        }
+        return text;
+      });
       const model = analyzeMetadata(xml);
       if (model) {
         debug('Modell aus $metadata:', model);
@@ -468,6 +540,7 @@ window.DocFlowPlugin = (() => {
 
     async getDocuments(dateFrom, dateTo, sourceConfig) {
       cfg = resolveConfig(sourceConfig);
+      sessionDeadline = Date.now() + cfg.sessionWaitMs;
 
       // "YYYY-MM-DD" aus dem Popup als lokale Kalendertage lesen: new Date()
       // würde UTC-Mitternacht liefern und in Deutschland den ersten Tag, in
@@ -480,9 +553,11 @@ window.DocFlowPlugin = (() => {
       const model       = await loadModel(servicePath);
 
       let categories = [];
+      let categoryError = null;
       try {
-        categories = await getCategories(servicePath, model);
+        categories = await withSession(() => getCategories(servicePath, model));
       } catch (err) {
+        categoryError = err;
         debug('Kategorien nicht ladbar:', err?.message);
       }
       if (!categories.length) {
@@ -490,18 +565,22 @@ window.DocFlowPlugin = (() => {
       }
 
       const all = [];
-      let failures = 0;
+      const errors = [];
       for (const category of categories) {
         try {
-          all.push(...await getDocumentsForCategory(servicePath, model, category, from, to));
+          all.push(...await withSession(() => getDocumentsForCategory(servicePath, model, category, from, to)));
         } catch (err) {
-          failures++;
+          errors.push(err);
           debug('Kategorie übersprungen:', String(category.id), err?.message);
         }
       }
 
-      if (failures === categories.length) {
-        throw new Error('SAP-Dokumentliste konnte nicht geladen werden — Service-Pfad prüfen oder erneut anmelden.');
+      if (errors.length === categories.length) {
+        const cause = (categoryError || errors[0])?.message || 'unbekannter Fehler';
+        throw new Error(
+          `SAP-Dokumentliste konnte nicht geladen werden: ${cause}. ` +
+          `Service-Pfad: ${servicePath}. Bitte Pfad in den Einstellungen prüfen oder im SAP-Tab erneut anmelden.`
+        );
       }
 
       debug('Fertig:', categories.length, 'Kategorien,', all.length, 'Dokumente');

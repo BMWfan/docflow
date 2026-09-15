@@ -145,10 +145,18 @@ test('pickPdfKeyName prefers the pdf key regardless of order', () => {
   assert.equal(I.pickPdfKeyName(['Id']), 'Id');
 });
 
-test('resolveConfig trims the service path and defaults debug to false', () => {
+test('resolveConfig normalises the service path and defaults debug to false', () => {
   const { I } = load();
-  assert.deepEqual(plain(I.resolveConfig({ servicePath: ' /sap/opu/odata/x/SRV/ ', client: ' 100 ' })), { servicePath: '/sap/opu/odata/x/SRV', client: '100', debug: false });
-  assert.deepEqual(plain(I.resolveConfig(null)), { servicePath: '', client: '', debug: false });
+  const base = { client: '', debug: false, sessionWaitMs: 30000, retryDelayMs: 2000 };
+  assert.deepEqual(plain(I.resolveConfig({ servicePath: ' /sap/opu/odata/x/SRV/ ', client: ' 100 ' })), { ...base, servicePath: '/sap/opu/odata/x/SRV', client: '100' });
+  assert.deepEqual(plain(I.resolveConfig(null)), { ...base, servicePath: '' });
+  for (const input of [
+    'https://sap.example.com/sap/opu/odata/kwp/XSS_PDF_VIEWER_SRV/$metadata',
+    'https://sap.example.com/sap/opu/odata/kwp/XSS_PDF_VIEWER_SRV/?sap-client=100',
+    'sap/opu/odata/kwp/XSS_PDF_VIEWER_SRV',
+  ]) {
+    assert.equal(I.resolveConfig({ servicePath: input }).servicePath, '/sap/opu/odata/kwp/XSS_PDF_VIEWER_SRV', input);
+  }
 });
 
 // ─── analyzeMetadata ─────────────────────────────────────────────────────────
@@ -272,7 +280,10 @@ test('getDocuments throws when every category fails instead of silently returnin
     [/Cat2Period/, () => textResp('error', 500)],
   ]);
   const { plugin } = load({ fetch });
-  await assert.rejects(plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/s' }), /Dokumentliste konnte nicht geladen werden/);
+  await assert.rejects(
+    plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/s' }),
+    /Dokumentliste konnte nicht geladen werden: SAP API HTTP 500\. Service-Pfad: \/s\./,
+  );
 });
 
 test('getDocuments logs nothing unless debug is enabled, and never logs document keys', async () => {
@@ -417,4 +428,61 @@ test('date range boundaries are inclusive local calendar days', async () => {
   const { plugin } = load({ fetch });
   const docs = plain(await plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/s' }));
   assert.deepEqual(docs.map(d => d.meta.pdfKey).sort(), ['FIRSTDAY', 'LASTDAY']);
+});
+
+// ─── session handling ────────────────────────────────────────────────────────
+
+test('getDocuments waits for the SSO login to finish and then succeeds', async () => {
+  let loggedIn = false;
+  setTimeout(() => { loggedIn = true; }, 60);
+  const login = () => textResp('<!doctype html><html><form action="https://login.microsoftonline.com/x"></form></html>', 200, 'text/html');
+  const fetch = makeFetch([
+    [/\$metadata$/, () => (loggedIn ? textResp(METADATA_XML) : login())],
+    [/CategorieSet\?/, () => (loggedIn ? jsonResp({ d: { results: [{ Viewid: '2PAYSTUB', Viewtext: 'Entgeltnachweise' }] } }) : login())],
+    [/PeriodHeaderSet/, () => jsonResp(header('2PAYSTUB', [['Beschreibung', 'String'], ['Zeitraum', 'String'], ['Abrechnungsperiode', 'String']]))],
+    [/Cat2Period/, () => jsonResp({ d: { results: [{ Viewid: '2PAYSTUB', Pdfkey: 'K1', Field1: V({ Stringvalue: 'E' }), Field2: V({ Stringvalue: '01.03.2025 - 31.03.2025' }), Field3: V({ Stringvalue: '2025 / 03' }) }] } })],
+  ]);
+  const { plugin } = load({ fetch });
+  const docs = await plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/s', retryDelayMs: 20, sessionWaitMs: 2000 });
+  assert.equal(docs.length, 1);
+});
+
+test('getDocuments reports a login page as the cause when the session never arrives', async () => {
+  const login = () => textResp('<html><body>Anmelden</body></html>', 200, 'text/html');
+  const fetch = makeFetch([[/./, login]]);
+  const { plugin } = load({ fetch });
+  await assert.rejects(
+    plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/s', retryDelayMs: 10, sessionWaitMs: 50 }),
+    /kein JSON .*vermutlich Login-Seite.*Service-Pfad: \/s\./,
+  );
+});
+
+test('getDocuments reports HTTP 404 for a wrong service path without waiting', async () => {
+  const fetch = makeFetch([]);
+  const { plugin } = load({ fetch });
+  const t0 = Date.now();
+  await assert.rejects(
+    plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/falsch', retryDelayMs: 1000, sessionWaitMs: 30000 }),
+    /SAP API HTTP 404\. Service-Pfad: \/falsch\./,
+  );
+  assert.ok(Date.now() - t0 < 900, 'no session retries for plain HTTP errors');
+});
+
+test('a redirect to another origin counts as missing login', async () => {
+  const redirected = () => ({ ok: true, status: 200, redirected: true, url: 'https://login.microsoftonline.com/common/saml2', headers: new Headers({ 'content-type': 'text/html' }), text: async () => '<html></html>', json: async () => { throw new Error('x'); } });
+  const fetch = makeFetch([[/./, redirected]]);
+  const { plugin } = load({ fetch });
+  await assert.rejects(
+    plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/s', retryDelayMs: 10, sessionWaitMs: 30 }),
+    /zur Anmeldung umgeleitet \(login\.microsoftonline\.com\)/,
+  );
+});
+
+test('the session wait is shared across all requests of one run', async () => {
+  const login = () => textResp('<html>login</html>', 200, 'text/html');
+  const fetch = makeFetch([[/./, login]]);
+  const { plugin } = load({ fetch });
+  const t0 = Date.now();
+  await assert.rejects(plugin.getDocuments('2025-01-01', '2025-12-31', { servicePath: '/s', retryDelayMs: 20, sessionWaitMs: 150 }));
+  assert.ok(Date.now() - t0 < 600, `took ${Date.now() - t0}ms, expected one shared wait`);
 });
