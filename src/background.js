@@ -174,6 +174,7 @@ async function startDownload(config) {
     debugLogging = false,
   } = config;
 
+  await startRunLog();
   await ensureOffscreen();
 
   emit({ type: 'STATUS', message: 'Verbinde mit Paperless-ngx…' });
@@ -431,7 +432,48 @@ function isHtmlResult(fetchResult) {
   return mime.startsWith('text/html') || String(fetchResult.dataUrl || '').startsWith('data:text/html');
 }
 
+// ─── Protokoll des letzten Laufs ─────────────────────────────────────────────
+// Das Popup schließt sich, sobald ein anderer Tab/Fenster den Fokus bekommt
+// (z. B. beim Login). Damit Meldungen nicht verloren gehen, wird jeder Lauf in
+// chrome.storage.local gespiegelt und beim nächsten Öffnen des Popups angezeigt.
+
+const RUN_LOG_KEY  = 'lastRun';
+const RUN_LOG_MAX  = 300;
+const RUN_LOG_SKIP = new Set(['DOCUMENT_PROCESSING', 'SHOP_STATUS']);
+let runLog      = null;
+let runLogTimer = null;
+
+function startRunLog() {
+  runLog = { startedAt: Date.now(), finishedAt: null, running: true, events: [] };
+  return persistRunLog(true);
+}
+
+function recordRunEvent(data) {
+  if (!runLog || !data || RUN_LOG_SKIP.has(data.type)) return;
+  runLog.events.push({ t: Date.now(), ...data });
+  if (runLog.events.length > RUN_LOG_MAX) {
+    runLog.events.splice(0, runLog.events.length - RUN_LOG_MAX);
+  }
+  const final = data.type === 'ALL_DONE' || data.type === 'FATAL';
+  if (final) {
+    runLog.running    = false;
+    runLog.finishedAt = Date.now();
+  }
+  persistRunLog(final);
+}
+
+function persistRunLog(immediate) {
+  if (!runLog) return Promise.resolve();
+  if (runLogTimer) { clearTimeout(runLogTimer); runLogTimer = null; }
+  const snapshot = { ...runLog, events: [...runLog.events] };
+  const write = () => chrome.storage.local.set({ [RUN_LOG_KEY]: snapshot }).catch(() => {});
+  if (immediate) return write();
+  runLogTimer = setTimeout(() => { runLogTimer = null; persistRunLog(true); }, 250);
+  return Promise.resolve();
+}
+
 function emit(data) {
+  recordRunEvent(data);
   if (progressPort) {
     try { progressPort.postMessage(data); } catch (_) {}
   }

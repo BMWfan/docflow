@@ -124,29 +124,8 @@ elBtnStart.addEventListener('click', async () => {
     return;
   }
 
-  // UI zurücksetzen
-  elLog.innerHTML  = '';
-  elSummary.classList.remove('visible');
-  elSummary.innerHTML = '';
-  elProgressArea.classList.add('visible');
-  elProgressBar.style.width = '0%';
-  elProgressCount.textContent = '0 / 0';
-  elProgressShop.textContent  = '–';
-  elCurrentItem.textContent   = '';
-  jobTotal = jobDone = 0;
-
-  running = true;
-  elBtnStart.textContent = 'Abbrechen';
-  elBtnStart.classList.add('cancel');
-
-  // Long-lived Port für Progress-Updates
-  progressPort = chrome.runtime.connect({ name: 'progress' });
-  progressPort.onMessage.addListener(handleProgress);
-  progressPort.onDisconnect.addListener(() => {
-    running = false;
-    elBtnStart.textContent = 'Dokumente abrufen';
-    elBtnStart.classList.remove('cancel');
-  });
+  resetProgressUi();
+  attachProgressPort();
 
   const startResponse = await chrome.runtime.sendMessage({
     action: 'START_DOWNLOAD',
@@ -175,6 +154,60 @@ elBtnStart.addEventListener('click', async () => {
     elProgressArea.classList.remove('visible');
   }
 });
+
+function resetProgressUi() {
+  elLog.innerHTML  = '';
+  elSummary.classList.remove('visible');
+  elSummary.innerHTML = '';
+  elProgressArea.classList.add('visible');
+  elProgressBar.style.width = '0%';
+  elProgressCount.textContent = '0 / 0';
+  elProgressShop.textContent  = '–';
+  elCurrentItem.textContent   = '';
+  jobTotal = jobDone = 0;
+}
+
+// Long-lived Port für Progress-Updates
+function attachProgressPort() {
+  running = true;
+  elBtnStart.textContent = 'Abbrechen';
+  elBtnStart.classList.add('cancel');
+
+  progressPort = chrome.runtime.connect({ name: 'progress' });
+  progressPort.onMessage.addListener(handleProgress);
+  progressPort.onDisconnect.addListener(() => {
+    running = false;
+    elBtnStart.textContent = 'Dokumente abrufen';
+    elBtnStart.classList.remove('cancel');
+  });
+}
+
+// Zeigt den gespeicherten letzten Lauf an (das Popup kann sich während eines
+// Laufs schließen, z. B. wenn ein Login-Tab den Fokus bekommt) und hängt sich
+// bei einem noch laufenden Abruf wieder an die Live-Meldungen.
+async function restoreLastRun() {
+  let lastRun = null;
+  let status  = null;
+  try {
+    ({ lastRun } = await chrome.storage.local.get('lastRun'));
+    status = await chrome.runtime.sendMessage({ action: 'GET_STATUS' });
+  } catch (_) {
+    return;
+  }
+  if (!lastRun?.events?.length && !status?.running) return;
+
+  resetProgressUi();
+  const when = lastRun?.startedAt ? new Date(lastRun.startedAt).toLocaleString('de-DE') : '';
+  appendLog('info', '🕘', status?.running ? `Laufender Abruf seit ${when}` : `Letzter Abruf vom ${when}`);
+
+  for (const ev of lastRun?.events ?? []) handleProgress(ev);
+
+  if (status?.running) {
+    attachProgressPort();
+  } else if (lastRun?.running) {
+    appendLog('error', '✗', 'Abruf wurde unterbrochen, bevor er fertig war (Browser oder Extension neu gestartet).');
+  }
+}
 
 function getDateRange() {
   if (elDateFrom.value && elDateTo.value) {
@@ -282,8 +315,8 @@ function appendLog(type, icon, text) {
   entry.className = `log-entry ${type}`;
   entry.innerHTML = `<span class="log-icon">${icon}</span><span class="log-text">${escHtml(text)}</span>`;
   elLog.appendChild(entry);
-  // max 80 Einträge, älteste entfernen
-  while (elLog.children.length > 80) elLog.removeChild(elLog.firstChild);
+  // max 300 Einträge, älteste entfernen
+  while (elLog.children.length > 300) elLog.removeChild(elLog.firstChild);
   elLog.scrollTop = elLog.scrollHeight;
 }
 
@@ -326,3 +359,4 @@ function escHtml(str) {
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
 loadSettings();
+restoreLastRun();

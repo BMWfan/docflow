@@ -254,3 +254,52 @@ test('popup surfaces a rejected START_DOWNLOAD with DocFlow wording', () => {
   assert.match(popup, /startResponse\?\.error/);
   assert.doesNotMatch(popup, /Download starten/);
 });
+
+// ─── persisted run log ───────────────────────────────────────────────────────
+
+const tick = ms => new Promise(r => setTimeout(r, ms));
+
+test('emit mirrors the run into chrome.storage.local and marks FATAL as finished', async () => {
+  const sb = loadBackground();
+  await sb.startRunLog();
+  assert.equal(sb.chrome.storage.local._store.lastRun.running, true);
+
+  sb.emit({ type: 'SHOP_START', shop: 'sapfiori' });
+  sb.emit({ type: 'DOCUMENT_PROCESSING', filename: 'x.pdf', current: 1, total: 1 });
+  sb.emit({ type: 'SHOP_ERROR', shop: 'sapfiori', message: 'Zugriff auf den SAP-Host fehlt' });
+  sb.emit({ type: 'FATAL', message: 'boom' });
+  await tick(5);
+
+  const run = plain(sb.chrome.storage.local._store.lastRun);
+  assert.equal(run.running, false);
+  assert.ok(run.finishedAt >= run.startedAt);
+  assert.deepEqual(run.events.map(e => e.type), ['SHOP_START', 'SHOP_ERROR', 'FATAL'], 'progress ticks are not stored');
+  assert.equal(run.events[1].message, 'Zugriff auf den SAP-Host fehlt');
+});
+
+test('run log writes are debounced but land without a final event', async () => {
+  const sb = loadBackground();
+  await sb.startRunLog();
+  sb.emit({ type: 'STATUS', message: 'a' });
+  assert.equal(sb.chrome.storage.local._store.lastRun.events.length, 0, 'not yet written');
+  await tick(300);
+  assert.equal(sb.chrome.storage.local._store.lastRun.events.length, 1);
+});
+
+test('run log keeps only the newest 300 events', async () => {
+  const sb = loadBackground();
+  await sb.startRunLog();
+  for (let i = 0; i < 350; i++) sb.emit({ type: 'STATUS', message: `m${i}` });
+  sb.emit({ type: 'ALL_DONE', uploaded: 0, duplicates: 0, errors: 0, discovered: 0 });
+  await tick(5);
+  const events = sb.chrome.storage.local._store.lastRun.events;
+  assert.equal(events.length, 300);
+  assert.equal(events.at(-1).type, 'ALL_DONE');
+});
+
+test('emit before a run started does not write a run log', async () => {
+  const sb = loadBackground();
+  sb.emit({ type: 'STATUS', message: 'x' });
+  await tick(300);
+  assert.equal(sb.chrome.storage.local._store.lastRun, undefined);
+});
