@@ -303,3 +303,94 @@ test('emit before a run started does not write a run log', async () => {
   await tick(300);
   assert.equal(sb.chrome.storage.local._store.lastRun, undefined);
 });
+
+// ─── discover → select → upload ──────────────────────────────────────────────
+
+function jobHarness({ documents, duplicateIds = [], cachedIds = [] }) {
+  const sb = loadBackground();
+  sb.sleep = async () => {};
+  const calls = { fetches: [], uploads: [] };
+  const events = [];
+  for (const id of cachedIds) (sb.chrome.storage.local._store.processedOrders ||= {})[id] = 1;
+  sb.chrome.tabs.get = async id => ({ id, status: 'complete', url: 'https://github.com/billing/history' });
+  sb.chrome.tabs.sendMessage = (id, msg, cb) => {
+    if (msg.action === 'GET_DOCUMENTS') return cb({ success: true, documents });
+    if (msg.action === 'FETCH_DOCUMENT') {
+      calls.fetches.push(msg.url);
+      return cb({ success: true, dataUrl: 'data:application/pdf;base64,' + 'A'.repeat(600), mimeType: 'application/pdf' });
+    }
+    return cb({});
+  };
+  sb.chrome.runtime.sendMessage = (msg, cb) => {
+    if (msg.target !== 'offscreen') return cb?.({});
+    if (msg.action === 'CHECK_DUPLICATE') return cb({ success: true, result: duplicateIds.includes(msg.orderId) });
+    if (msg.action === 'UPLOAD_DOCUMENT') { calls.uploads.push(msg.filename); return cb({ success: true, result: {} }); }
+    return cb({ success: true, result: true });
+  };
+  sb.chrome.listeners.onConnect[0]({ name: 'progress', postMessage: e => events.push(plain(e)), onDisconnect: { addListener() {} } });
+  return { sb, calls, events };
+}
+
+const DOCS = [
+  { orderId: 'A', filename: '20250101_1,00EUR_github_A.pdf', documentUrl: 'https://x/A.pdf', date: '2025-01-01T00:00:00.000Z' },
+  { orderId: 'B', filename: '20250201_2,00EUR_github_B.pdf', documentUrl: 'https://x/B.pdf', date: '2025-02-01T00:00:00.000Z', category: 'Rechnung' },
+  { orderId: 'C', filename: '20250301_3,00EUR_github_C.pdf', documentUrl: 'https://x/C.pdf', date: null },
+];
+const BASE = { dateFrom: '2025-01-01', dateTo: '2025-12-31', paperlessUrl: 'https://p', paperlessToken: 't' };
+
+test('discover mode checks duplicates, stores a selection list and never fetches or uploads', async () => {
+  const { sb, calls, events } = jobHarness({ documents: DOCS, duplicateIds: ['B'], cachedIds: ['C'] });
+  await sb.startDownload({ ...BASE, shops: ['github'], mode: 'discover' });
+
+  assert.equal(calls.fetches.length, 0);
+  assert.equal(calls.uploads.length, 0);
+  const done = events.find(e => e.type === 'DISCOVERY_DONE');
+  assert.deepEqual({ total: done.total, fresh: done.fresh, duplicates: done.duplicates }, { total: 3, fresh: 1, duplicates: 2 });
+  assert.ok(!events.some(e => e.type === 'ALL_DONE'));
+
+  const d = plain(sb.chrome.storage.local._store.lastDiscovery);
+  assert.equal(d.dateFrom, '2025-01-01');
+  assert.deepEqual(d.shops, ['github']);
+  assert.deepEqual(d.documents.map(x => [x.orderId, x.status]), [['A', 'new'], ['B', 'paperless'], ['C', 'cache']]);
+  assert.equal(d.documents[1].category, 'Rechnung');
+  assert.ok(!('documentUrl' in d.documents[0]), 'no download URLs are stored');
+
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(sb.chrome.storage.local._store.lastRun.running, false, 'DISCOVERY_DONE finishes the run log');
+});
+
+test('upload mode re-reads the source and uploads only the selected documents', async () => {
+  const { sb, calls, events } = jobHarness({ documents: DOCS });
+  sb.chrome.storage.local._store.lastDiscovery = { documents: [] };
+  await sb.startDownload({ ...BASE, shops: ['github', 'amazon'], mode: 'upload', selection: { github: ['A', 'C', 'GONE'], amazon: [] } });
+
+  assert.deepEqual(calls.fetches, ['https://x/A.pdf', 'https://x/C.pdf']);
+  assert.deepEqual(calls.uploads, [DOCS[0].filename, DOCS[2].filename]);
+  assert.ok(!events.some(e => e.type === 'SHOP_START' && e.shop === 'amazon'), 'sources without a selection are not opened');
+  const missing = events.find(e => e.type === 'DOCUMENT_ERROR');
+  assert.equal(missing.filename, 'GONE');
+  const done = events.find(e => e.type === 'ALL_DONE');
+  assert.deepEqual({ uploaded: done.uploaded, errors: done.errors, discovered: done.discovered }, { uploaded: 2, errors: 1, discovered: 2 });
+  assert.equal(sb.chrome.storage.local._store.lastDiscovery, undefined, 'selection list is cleared after upload');
+});
+
+test('upload mode still skips a selected document that meanwhile landed in Paperless', async () => {
+  const { sb, calls } = jobHarness({ documents: DOCS, duplicateIds: ['A'] });
+  await sb.startDownload({ ...BASE, shops: ['github'], mode: 'upload', selection: { github: ['A'] } });
+  assert.equal(calls.uploads.length, 0);
+});
+
+test('direct mode keeps the previous behaviour', async () => {
+  const { sb, calls, events } = jobHarness({ documents: DOCS, duplicateIds: ['B'] });
+  await sb.startDownload({ ...BASE, shops: ['github'] });
+  assert.deepEqual(calls.uploads, [DOCS[0].filename, DOCS[2].filename]);
+  assert.ok(events.some(e => e.type === 'DOCUMENT_SKIP' && e.reason === 'paperless'));
+  assert.ok(events.some(e => e.type === 'ALL_DONE'));
+});
+
+test('normaliseSelection drops empty sources and stringifies ids', () => {
+  const sb = loadBackground();
+  const m = sb.normaliseSelection({ a: [1, '2', ''], b: [], c: 'x' });
+  assert.deepEqual([...m.keys()], ['a']);
+  assert.deepEqual([...m.get('a')], ['1', '2']);
+});

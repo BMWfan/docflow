@@ -52,7 +52,9 @@ The extension uses the browser's existing authenticated sessions and uploads doc
 ## Features
 
 - automatic document collection
-- direct Paperless-ngx upload
+- choose what to upload: search first, review the list (documents already in Paperless are marked), then upload only the checked ones
+- direct Paperless-ngx upload (toggle "Vor dem Hochladen auswählen" off)
+- run log survives a closed popup and is shown again when it is reopened
 - duplicate detection
 - SAP/Fiori OData integration
 - Azure AD SSO compatibility

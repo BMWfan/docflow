@@ -174,6 +174,14 @@ async function startDownload(config) {
     debugLogging = false,
   } = config;
 
+  // direct   = finden und sofort hochladen (bisheriges Verhalten)
+  // discover = nur finden + Duplikate prüfen, Liste zur Auswahl speichern
+  // upload   = Quellen neu lesen und nur die ausgewählten orderIds hochladen
+  const mode      = config.mode === 'discover' || config.mode === 'upload' ? config.mode : 'direct';
+  const selection = mode === 'upload' ? normaliseSelection(config.selection) : null;
+  const shopsToRun = mode === 'upload' ? (shops || []).filter(id => selection.has(id)) : (shops || []);
+  const discovered = [];
+
   await startRunLog();
   await ensureOffscreen();
 
@@ -194,7 +202,7 @@ async function startDownload(config) {
   let totalErrors     = 0;
   let totalDiscovered = 0;
 
-  for (const shopId of shops) {
+  for (const shopId of shopsToRun) {
     if (activeJob.cancelled) break;
 
     emit({ type: 'SHOP_START', shop: shopId });
@@ -231,6 +239,19 @@ async function startDownload(config) {
         if (listResult.error) throw new Error(listResult.error);
         documents = listResult.documents ?? listResult.invoices ?? [];
       }
+
+      if (mode === 'upload') {
+        const wanted   = selection.get(shopId);
+        const foundIds = new Set(documents.map(d => String(d.orderId)));
+        for (const id of wanted) {
+          if (!foundIds.has(id)) {
+            emit({ type: 'DOCUMENT_ERROR', filename: id, message: 'Beim erneuten Abruf nicht mehr gefunden.' });
+            totalErrors++;
+          }
+        }
+        documents = documents.filter(d => wanted.has(String(d.orderId)));
+      }
+
       totalDiscovered += documents.length;
       emit({ type: 'SHOP_DOCUMENTS_FOUND', shop: shopId, count: documents.length });
       emit({ type: 'DOCUMENT_DISCOVERED', shop: shopId, message: `${documents.length} Dokumente erkannt` });
@@ -242,18 +263,24 @@ async function startDownload(config) {
         emit({ type: 'DOCUMENT_PROCESSING', shop: shopId, filename: doc.filename, current: i + 1, total: documents.length });
 
         try {
-          // 1. Lokaler Cache
+          // 1. Lokaler Cache, 2. Paperless-Duplikatprüfung (Offscreen → mTLS)
+          let status = 'new';
           if (await isLocalCached(doc.orderId)) {
-            emit({ type: 'DOCUMENT_SKIP', filename: doc.filename, reason: 'cache' });
-            totalDuplicates++;
+            status = 'cache';
+          } else if (await paperless('CHECK_DUPLICATE', paperlessUrl, paperlessToken, { orderId: doc.orderId })) {
+            await addLocalCache(doc.orderId);
+            status = 'paperless';
+          }
+
+          if (mode === 'discover') {
+            discovered.push(summarizeDocument(shopId, doc, status));
+            if (status !== 'new') totalDuplicates++;
+            emit({ type: 'DOCUMENT_CHECKED', shop: shopId });
             continue;
           }
 
-          // 2. Paperless-Duplikatprüfung (läuft im Offscreen → mTLS)
-          const exists = await paperless('CHECK_DUPLICATE', paperlessUrl, paperlessToken, { orderId: doc.orderId });
-          if (exists) {
-            await addLocalCache(doc.orderId);
-            emit({ type: 'DOCUMENT_SKIP', filename: doc.filename, reason: 'paperless' });
+          if (status !== 'new') {
+            emit({ type: 'DOCUMENT_SKIP', filename: doc.filename, reason: status });
             totalDuplicates++;
             continue;
           }
@@ -299,6 +326,19 @@ async function startDownload(config) {
 
   activeJob = null;
   await closeOffscreen();
+
+  if (mode === 'discover') {
+    const fresh = discovered.filter(d => d.status === 'new').length;
+    await chrome.storage.local.set({
+      lastDiscovery: { createdAt: Date.now(), dateFrom, dateTo, shops: shopsToRun, documents: discovered },
+    }).catch(() => {});
+    emit({ type: 'DISCOVERY_DONE', total: discovered.length, fresh, duplicates: totalDuplicates, errors: totalErrors });
+    return;
+  }
+  if (mode === 'upload') {
+    await chrome.storage.local.remove('lastDiscovery').catch(() => {});
+  }
+
   emit({
     type: 'ALL_DONE',
     uploaded: totalUploaded,
@@ -306,6 +346,31 @@ async function startDownload(config) {
     errors: totalErrors,
     discovered: totalDiscovered,
   });
+}
+
+// ─── Auswahl vor dem Hochladen ────────────────────────────────────────────────
+
+/** { shopId: [orderId, …] } → Map<shopId, Set<orderId>> (leere Quellen entfallen) */
+function normaliseSelection(selection) {
+  const map = new Map();
+  if (!selection || typeof selection !== 'object') return map;
+  for (const [shopId, ids] of Object.entries(selection)) {
+    const set = new Set((Array.isArray(ids) ? ids : []).map(String).filter(Boolean));
+    if (set.size) map.set(shopId, set);
+  }
+  return map;
+}
+
+/** Nur das, was das Popup zur Auswahl braucht — keine URLs, keine Metadaten. */
+function summarizeDocument(shopId, doc, status) {
+  return {
+    shop:     shopId,
+    orderId:  String(doc.orderId),
+    filename: String(doc.filename || ''),
+    date:     doc.date ?? null,
+    category: doc.category ?? null,
+    status,
+  };
 }
 
 // ─── Shop-spezifische Navigationsfunktion für CSD-geschützte Seiten ──────────
@@ -439,7 +504,8 @@ function isHtmlResult(fetchResult) {
 
 const RUN_LOG_KEY  = 'lastRun';
 const RUN_LOG_MAX  = 300;
-const RUN_LOG_SKIP = new Set(['DOCUMENT_PROCESSING', 'SHOP_STATUS']);
+const RUN_LOG_SKIP = new Set(['DOCUMENT_PROCESSING', 'DOCUMENT_CHECKED', 'SHOP_STATUS']);
+const RUN_FINAL    = new Set(['ALL_DONE', 'FATAL', 'DISCOVERY_DONE']);
 let runLog      = null;
 let runLogTimer = null;
 
@@ -454,7 +520,7 @@ function recordRunEvent(data) {
   if (runLog.events.length > RUN_LOG_MAX) {
     runLog.events.splice(0, runLog.events.length - RUN_LOG_MAX);
   }
-  const final = data.type === 'ALL_DONE' || data.type === 'FATAL';
+  const final = RUN_FINAL.has(data.type);
   if (final) {
     runLog.running    = false;
     runLog.finishedAt = Date.now();
