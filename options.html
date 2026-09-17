@@ -1,9 +1,9 @@
-<!DOCTYPE html>
+mbe<!DOCTYPE html>
 <html lang="de">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>InvoiceFlow — Einstellungen</title>
+  <title>DocFlow — Einstellungen</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -221,6 +221,12 @@
     .cf-add-btn:hover { background: #eff6ff; border-color: #93c5fd; }
 
     .cf-rows { display: flex; flex-direction: column; gap: 6px; }
+    .meta-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid #f1f5f9; }
+    .meta-row:last-child { border-bottom: none; padding-bottom: 0; }
+    .meta-row:first-child { padding-top: 0; }
+    .meta-row .shop-tag-label { flex: 0 0 120px; }
+    .meta-row select { flex: 1; min-width: 0; }
+    .meta-row .meta-caption { font-size: 11px; color: #94a3b8; flex: 0 0 auto; }
 
     .cf-row {
       display: flex;
@@ -279,7 +285,7 @@
 
   <div class="header">
     <img src="icons/icon48.png" alt="">
-    <h1>InvoiceFlow — Einstellungen</h1>
+    <h1>DocFlow — Einstellungen</h1>
   </div>
 
   <!-- Paperless-ngx -->
@@ -298,6 +304,34 @@
         <button class="btn btn-secondary" id="btnTest">Verbindung testen</button>
         <span id="connectionStatus" style="display:none" class="connection-status"></span>
       </div>
+    </div>
+  </div>
+
+  <!-- SAP / Fiori -->
+  <div class="card">
+    <h2>SAP / Fiori</h2>
+    <p style="font-size:12px;color:#64748b;margin-bottom:12px;">
+      URL der Fiori-App (z.&nbsp;B. Gehaltsabrechnungen) aus der Adresszeile einfügen. Der Host wird daraus abgeleitet;
+      DocFlow fragt einmalig den Zugriff auf diesen Host an und lädt das SAP-Plugin dort automatisch.
+    </p>
+
+    <div class="field">
+      <label for="sapStartUrl">Start-URL der Fiori-App</label>
+      <div class="input-row">
+        <input type="url" id="sapStartUrl" placeholder="https://sap.example.com/sap/bc/ui2/flp?sap-client=100#ZXSSFORMVIEWER-display&amp;/Categories?tab=2PAYSTUB">
+        <button class="btn btn-secondary" id="btnSapPermission">Zugriff erlauben</button>
+        <span id="sapStatus" style="display:none" class="connection-status"></span>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="sapServicePath">OData-Service-Pfad <span style="font-weight:400;color:#94a3b8;">(optional — wird sonst über den Gateway-Katalog ermittelt)</span></label>
+      <input type="text" id="sapServicePath" placeholder="/sap/opu/odata/kwp/XSS_PDF_VIEWER_SRV">
+    </div>
+
+    <div class="field">
+      <label for="sapClient">SAP-Mandant <span style="font-weight:400;color:#94a3b8;">(optional)</span></label>
+      <input type="text" id="sapClient" placeholder="100" style="max-width:120px;">
     </div>
   </div>
 
@@ -406,6 +440,17 @@
         <input type="checkbox" id="shopRevolut" value="revolut">
         <span>Revolut</span>
       </label>
+      <label class="shop-toggle">
+        <input type="checkbox" id="shopDeutschegiganetz" value="deutschegiganetz">
+        <span>Deutsche GigaNetz</span>
+      </label>
+    </div>
+    <p style="font-size:12px;color:#64748b;margin-bottom:10px;font-weight:600;">Enterprise / SAP</p>
+    <div class="shops-grid">
+      <label class="shop-toggle">
+        <input type="checkbox" id="shopSapfiori" value="sapfiori">
+        <span>SAP Fiori / HR</span>
+      </label>
     </div>
   </div>
 
@@ -480,7 +525,24 @@
         <div class="shop-tag-label">Revolut</div>
         <div class="tags-container" id="tags-revolut"><span style="font-size:12px;color:#94a3b8;">Noch keine Tags geladen.</span></div>
       </div>
+      <div class="shop-tag-row">
+        <div class="shop-tag-label">SAP Fiori / HR</div>
+        <div class="tags-container" id="tags-sapfiori"><span style="font-size:12px;color:#94a3b8;">Noch keine Tags geladen.</span></div>
+      </div>
+      <div class="shop-tag-row">
+        <div class="shop-tag-label">Deutsche GigaNetz</div>
+        <div class="tags-container" id="tags-deutschegiganetz"><span style="font-size:12px;color:#94a3b8;">Noch keine Tags geladen.</span></div>
+      </div>
     </div>
+  </div>
+
+  <!-- Dokumenttyp & Korrespondent -->
+  <div class="card">
+    <h2>Dokumenttyp &amp; Korrespondent <span style="font-size:11px;color:#94a3b8;font-weight:400;text-transform:none;">(optional)</span></h2>
+    <p style="font-size:12px;color:#64748b;margin-bottom:12px;">
+      Pro Quelle wählbar — Werte werden nach dem Speichern einer gültigen Verbindung aus Paperless geladen.
+    </p>
+    <div id="shopMetaList"></div>
   </div>
 
   <!-- Benutzerdefinierte Felder -->
@@ -491,6 +553,18 @@
       Mit <strong>+</strong> ein neues Feld hinzufügen.
     </p>
     <div id="shopCustomFieldsList"></div>
+  </div>
+
+  <!-- Erweitert -->
+  <div class="card">
+    <h2>Erweitert</h2>
+    <label class="shop-toggle" style="display:inline-flex;">
+      <input type="checkbox" id="debugLogging">
+      <span>Debug-Logging in der Browser-Konsole</span>
+    </label>
+    <p style="font-size:12px;color:#64748b;margin-top:8px;">
+      Nur zur Fehlersuche. Auch mit Debug-Logging werden keine Dokument-Schlüssel, Perioden oder Download-URLs protokolliert.
+    </p>
   </div>
 
   <!-- Speichern -->

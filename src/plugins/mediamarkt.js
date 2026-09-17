@@ -1,5 +1,5 @@
 /**
- * InvoiceFlow — MediaMarkt.de Plugin
+ * DocFlow — MediaMarkt.de Plugin
  *
  * Bestellhistorie: https://www.mediamarkt.de/de/myaccount/orders
  * Rechnungen:      PDF über "Rechnung herunterladen" in der Bestelldetailansicht
@@ -7,7 +7,7 @@
  * Status: Grundgerüst — Selektoren müssen an aktuelles MediaMarkt-Frontend angepasst werden.
  */
 
-window.InvoiceFlowPlugin = (() => {
+window.DocFlowPlugin = (() => {
 
   const BASE_URL = 'https://www.mediamarkt.de';
 
@@ -39,7 +39,7 @@ window.InvoiceFlowPlugin = (() => {
     name:    'MediaMarkt',
     domains: ['mediamarkt.de'],
 
-    async getInvoices(dateFrom, dateTo) {
+    async getDocuments(dateFrom, dateTo) {
       const from = new Date(dateFrom);
       const to   = new Date(dateTo);
       to.setHours(23, 59, 59, 999);
@@ -95,7 +95,7 @@ window.InvoiceFlowPlugin = (() => {
             orderId,
             date: date.toISOString(),
             amount,
-            invoiceUrl: href.startsWith('http') ? href : BASE_URL + href,
+            documentUrl: href.startsWith('http') ? href : BASE_URL + href,
             filename:   _buildFilename(date, amount, orderId),
           });
         }
@@ -110,7 +110,7 @@ window.InvoiceFlowPlugin = (() => {
       return invoices;
     },
 
-    async fetchInvoice(url) {
+    async fetchDocument(url) {
       const resp = await fetch(url, {
         credentials: 'include',
         headers: { Accept: 'application/pdf, */*' },

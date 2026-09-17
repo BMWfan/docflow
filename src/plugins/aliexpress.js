@@ -1,4 +1,4 @@
-window.InvoiceFlowPlugin = (() => {
+window.DocFlowPlugin = (() => {
   const _sleep = ms => new Promise(r => setTimeout(r, ms));
 
   function _fmtDate(d) {
@@ -51,7 +51,7 @@ window.InvoiceFlowPlugin = (() => {
     name: 'AliExpress',
     domains: ['www.aliexpress.com', 'aliexpress.com'],
 
-    async getInvoices(dateFrom, dateTo) {
+    async getDocuments(dateFrom, dateTo) {
       const from = new Date(dateFrom);
       const to   = new Date(dateTo);
       to.setHours(23, 59, 59, 999);
@@ -92,7 +92,7 @@ window.InvoiceFlowPlugin = (() => {
           orderId:    id,
           date:       orderDate.toISOString(),
           amount,
-          invoiceUrl: detailUrl,
+          documentUrl: detailUrl,
           filename:   _filename(orderDate, amount, id),
         });
       }
@@ -100,7 +100,7 @@ window.InvoiceFlowPlugin = (() => {
       return invoices;
     },
 
-    async fetchInvoice(url) {
+    async fetchDocument(url) {
       // AliExpress order detail page — fetch as HTML and convert to blob
       const resp = await fetch(url, {
         credentials: 'include',

@@ -1,5 +1,5 @@
 /**
- * InvoiceFlow — Otto.de Plugin
+ * DocFlow — Otto.de Plugin
  *
  * Bestellhistorie: https://www.otto.de/meinekonto/bestellungen
  * Rechnungen:      PDF über "Rechnung" in der Bestelldetailansicht
@@ -10,7 +10,7 @@
  * API-Endpoints (`/api/orders?page=X`) statt HTML-Seiten implementiert werden.
  */
 
-window.InvoiceFlowPlugin = (() => {
+window.DocFlowPlugin = (() => {
 
   const BASE_URL = 'https://www.otto.de';
 
@@ -55,7 +55,7 @@ window.InvoiceFlowPlugin = (() => {
     name:    'Otto',
     domains: ['otto.de'],
 
-    async getInvoices(dateFrom, dateTo) {
+    async getDocuments(dateFrom, dateTo) {
       const from = new Date(dateFrom);
       const to   = new Date(dateTo);
       to.setHours(23, 59, 59, 999);
@@ -87,7 +87,7 @@ window.InvoiceFlowPlugin = (() => {
                 orderId,
                 date: date.toISOString(),
                 amount,
-                invoiceUrl: url.startsWith('http') ? url : BASE_URL + url,
+                documentUrl: url.startsWith('http') ? url : BASE_URL + url,
                 filename:   _buildFilename(date, amount, orderId),
               });
             }
@@ -133,7 +133,7 @@ window.InvoiceFlowPlugin = (() => {
             orderId,
             date: date.toISOString(),
             amount,
-            invoiceUrl: href.startsWith('http') ? href : BASE_URL + href,
+            documentUrl: href.startsWith('http') ? href : BASE_URL + href,
             filename:   _buildFilename(date, amount, orderId),
           });
         }
@@ -148,7 +148,7 @@ window.InvoiceFlowPlugin = (() => {
       return invoices;
     },
 
-    async fetchInvoice(url) {
+    async fetchDocument(url) {
       const resp = await fetch(url, {
         credentials: 'include',
         headers: { Accept: 'application/pdf, */*' },

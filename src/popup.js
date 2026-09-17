@@ -15,6 +15,11 @@ const elProgressBar  = $('progressBar');
 const elCurrentItem  = $('currentItem');
 const elLog          = $('logContainer');
 const elSummary      = $('summary');
+const elSelectMode   = $('selectMode');
+const elSelArea      = $('selectionArea');
+const elSelInfo      = $('selectionInfo');
+const elSelList      = $('selectionList');
+const elBtnUploadSel = $('btnUploadSelected');
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -22,6 +27,18 @@ let running    = false;
 let progressPort = null;
 let jobTotal   = 0;
 let jobDone    = 0;
+let currentDiscovery = null;
+let selectionInputs  = [];
+
+const SETTINGS_KEYS = [
+  'paperlessUrl', 'paperlessToken',
+  'shopTags', 'shopCustomFields', 'shopDocumentTypes', 'shopCorrespondents',
+  'sapConfig', 'debugLogging',
+];
+
+function idleLabel() {
+  return elSelectMode?.checked ? 'Dokumente suchen' : 'Dokumente abrufen';
+}
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
@@ -56,8 +73,13 @@ async function loadSettings() {
   const s = await chrome.storage.sync.get([
     'paperlessUrl', 'paperlessToken',
     'defaultDateRange', 'customFrom', 'customTo',
-    'enabledShops',
+    'enabledShops', 'selectBeforeUpload',
   ]);
+
+  if (elSelectMode) {
+    elSelectMode.checked = s.selectBeforeUpload ?? true;
+    if (!running) elBtnStart.textContent = idleLabel();
+  }
 
   const hasCreds = !!(s.paperlessUrl && s.paperlessToken);
   elNoConfig.style.display = hasCreds ? 'none' : 'block';
@@ -97,13 +119,13 @@ async function loadSettings() {
 elBtnStart.addEventListener('click', async () => {
   if (running) {
     await chrome.runtime.sendMessage({ action: 'CANCEL_DOWNLOAD' });
-    elBtnStart.textContent = 'Download starten';
+    elBtnStart.textContent = idleLabel();
     elBtnStart.classList.remove('cancel');
     running = false;
     return;
   }
 
-  const s = await chrome.storage.sync.get(['paperlessUrl', 'paperlessToken', 'shopTags', 'shopCustomFields']);
+  const s = await chrome.storage.sync.get(SETTINGS_KEYS);
   if (!s.paperlessUrl || !s.paperlessToken) {
     chrome.runtime.openOptionsPage();
     return;
@@ -111,8 +133,7 @@ elBtnStart.addEventListener('click', async () => {
 
   const shops = Array.from(elShopsGrid.querySelectorAll('input:checked')).map(cb => cb.value);
   if (shops.length === 0) {
-    appendLog('error', '!', 'Mindestens einen Shop auswählen.');
-    return;
+    appendLog('error', '!', 'Mindestens eine Dokumentquelle auswählen.');    return;
   }
 
   const { dateFrom, dateTo } = getDateRange();
@@ -121,7 +142,185 @@ elBtnStart.addEventListener('click', async () => {
     return;
   }
 
-  // UI zurücksetzen
+  renderSelection(null);
+  await startJob({
+    ...baseConfig(s),
+    shops,
+    dateFrom,
+    dateTo,
+    mode: elSelectMode?.checked ? 'discover' : 'direct',
+  });
+});
+
+function baseConfig(s) {
+  return {
+    paperlessUrl:       s.paperlessUrl,
+    paperlessToken:     s.paperlessToken,
+    shopTags:           s.shopTags || {},
+    shopCustomFields:   s.shopCustomFields || {},
+    shopDocumentTypes:  s.shopDocumentTypes || {},
+    shopCorrespondents: s.shopCorrespondents || {},
+    sapConfig:          s.sapConfig || null,
+    debugLogging:       Boolean(s.debugLogging),
+  };
+}
+
+async function startJob(config) {
+  resetProgressUi();
+  attachProgressPort();
+
+  const startResponse = await chrome.runtime.sendMessage({ action: 'START_DOWNLOAD', config });
+
+  if (startResponse?.error) {
+    appendLog('error', '!', startResponse.error);
+    if (progressPort) { progressPort.disconnect(); progressPort = null; }
+    running = false;
+    elBtnStart.textContent = idleLabel();
+    elBtnStart.classList.remove('cancel');
+  }
+}
+
+// ─── Auswahl ──────────────────────────────────────────────────────────────────
+
+elSelectMode?.addEventListener('change', () => {
+  chrome.storage.sync.set({ selectBeforeUpload: elSelectMode.checked }).catch(() => {});
+  if (!running) elBtnStart.textContent = idleLabel();
+});
+
+$('selAll')?.addEventListener('click', () => {
+  for (const x of selectionInputs) if (!x.input.disabled) x.input.checked = true;
+  updateSelectionInfo();
+});
+
+$('selNone')?.addEventListener('click', () => {
+  for (const x of selectionInputs) x.input.checked = false;
+  updateSelectionInfo();
+});
+
+$('selDiscard')?.addEventListener('click', async () => {
+  await chrome.storage.local.remove('lastDiscovery').catch(() => {});
+  renderSelection(null);
+});
+
+elBtnUploadSel?.addEventListener('click', async () => {
+  if (running || !currentDiscovery) return;
+
+  const selection = {};
+  for (const { input, shop, orderId } of selectionInputs) {
+    if (input.checked && !input.disabled) (selection[shop] ||= []).push(orderId);
+  }
+  const shops = Object.keys(selection);
+  if (!shops.length) return;
+
+  const s = await chrome.storage.sync.get(SETTINGS_KEYS);
+  if (!s.paperlessUrl || !s.paperlessToken) {
+    chrome.runtime.openOptionsPage();
+    return;
+  }
+
+  const discovery = currentDiscovery;
+  renderSelection(null);
+  await startJob({
+    ...baseConfig(s),
+    shops,
+    dateFrom: discovery.dateFrom,
+    dateTo:   discovery.dateTo,
+    mode:     'upload',
+    selection,
+  });
+});
+
+async function showDiscovery() {
+  try {
+    const { lastDiscovery } = await chrome.storage.local.get('lastDiscovery');
+    renderSelection(lastDiscovery);
+  } catch (_) { /* nichts gespeichert */ }
+}
+
+function formatDocDate(value) {
+  if (!value) return '—';
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+function displayName(doc) {
+  const escaped = String(doc.orderId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const base = String(doc.filename || doc.orderId).replace(/\.pdf$/i, '').replace(new RegExp(`_?${escaped}$`), '');
+  return base || String(doc.orderId);
+}
+
+function renderSelection(discovery) {
+  currentDiscovery = discovery?.documents?.length ? discovery : null;
+  selectionInputs  = [];
+  if (!elSelList || !elSelArea) return;
+  elSelList.innerHTML = '';
+
+  if (!currentDiscovery) {
+    elSelArea.classList.remove('visible');
+    return;
+  }
+
+  const order = [...new Set([...(currentDiscovery.shops || []), ...currentDiscovery.documents.map(d => d.shop)])];
+  for (const shop of order) {
+    const docs = currentDiscovery.documents
+      .filter(d => d.shop === shop)
+      .sort((a, b) => (b.date ? Date.parse(b.date) : 0) - (a.date ? Date.parse(a.date) : 0));
+    if (!docs.length) continue;
+
+    const head = document.createElement('div');
+    head.className = 'sel-shop';
+    head.textContent = `${shopLabel(shop)} (${docs.length})`;
+    elSelList.appendChild(head);
+
+    for (const doc of docs) {
+      const isNew = doc.status === 'new';
+      const row = document.createElement('label');
+      row.className = isNew ? 'sel-item' : 'sel-item dup';
+      row.title = doc.filename || doc.orderId;
+
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = isNew;
+      input.disabled = !isNew;
+      input.addEventListener('change', updateSelectionInfo);
+
+      const date = document.createElement('span');
+      date.className = 'sel-date';
+      date.textContent = formatDocDate(doc.date);
+
+      const name = document.createElement('span');
+      name.className = 'sel-name';
+      name.textContent = displayName(doc);
+
+      row.appendChild(input);
+      row.appendChild(date);
+      row.appendChild(name);
+      if (!isNew) {
+        const badge = document.createElement('span');
+        badge.className = 'sel-badge';
+        badge.textContent = doc.status === 'paperless' ? 'in Paperless' : 'bereits geladen';
+        row.appendChild(badge);
+      }
+      elSelList.appendChild(row);
+      selectionInputs.push({ input, shop: doc.shop, orderId: doc.orderId });
+    }
+  }
+
+  elSelArea.classList.add('visible');
+  updateSelectionInfo();
+}
+
+function updateSelectionInfo() {
+  const available = selectionInputs.filter(x => !x.input.disabled).length;
+  const chosen    = selectionInputs.filter(x => x.input.checked && !x.input.disabled).length;
+  if (elSelInfo) elSelInfo.textContent = `${chosen} von ${available} neuen ausgewählt`;
+  if (elBtnUploadSel) {
+    elBtnUploadSel.disabled = chosen === 0 || running;
+    elBtnUploadSel.textContent = chosen ? `${chosen} Dokument(e) hochladen` : 'Nichts ausgewählt';
+  }
+}
+
+function resetProgressUi() {
   elLog.innerHTML  = '';
   elSummary.classList.remove('visible');
   elSummary.innerHTML = '';
@@ -131,33 +330,49 @@ elBtnStart.addEventListener('click', async () => {
   elProgressShop.textContent  = '–';
   elCurrentItem.textContent   = '';
   jobTotal = jobDone = 0;
+}
 
+// Long-lived Port für Progress-Updates
+function attachProgressPort() {
   running = true;
   elBtnStart.textContent = 'Abbrechen';
   elBtnStart.classList.add('cancel');
 
-  // Long-lived Port für Progress-Updates
   progressPort = chrome.runtime.connect({ name: 'progress' });
   progressPort.onMessage.addListener(handleProgress);
   progressPort.onDisconnect.addListener(() => {
     running = false;
-    elBtnStart.textContent = 'Download starten';
+    elBtnStart.textContent = idleLabel();
     elBtnStart.classList.remove('cancel');
   });
+}
 
-  await chrome.runtime.sendMessage({
-    action: 'START_DOWNLOAD',
-    config: {
-      shops,
-      dateFrom,
-      dateTo,
-      paperlessUrl:      s.paperlessUrl,
-      paperlessToken:    s.paperlessToken,
-      shopTags:          s.shopTags || {},
-      shopCustomFields:  s.shopCustomFields || {},
-    },
-  });
-});
+// Zeigt den gespeicherten letzten Lauf an (das Popup kann sich während eines
+// Laufs schließen, z. B. wenn ein Login-Tab den Fokus bekommt) und hängt sich
+// bei einem noch laufenden Abruf wieder an die Live-Meldungen.
+async function restoreLastRun() {
+  let lastRun = null;
+  let status  = null;
+  try {
+    ({ lastRun } = await chrome.storage.local.get('lastRun'));
+    status = await chrome.runtime.sendMessage({ action: 'GET_STATUS' });
+  } catch (_) {
+    return;
+  }
+  if (!lastRun?.events?.length && !status?.running) return;
+
+  resetProgressUi();
+  const when = lastRun?.startedAt ? new Date(lastRun.startedAt).toLocaleString('de-DE') : '';
+  appendLog('info', '🕘', status?.running ? `Laufender Abruf seit ${when}` : `Letzter Abruf vom ${when}`);
+
+  for (const ev of lastRun?.events ?? []) handleProgress(ev);
+
+  if (status?.running) {
+    attachProgressPort();
+  } else if (lastRun?.running) {
+    appendLog('error', '✗', 'Abruf wurde unterbrochen, bevor er fertig war (Browser oder Extension neu gestartet).');
+  }
+}
 
 function getDateRange() {
   if (elDateFrom.value && elDateTo.value) {
@@ -188,29 +403,45 @@ function handleProgress(msg) {
       elCurrentItem.textContent = msg.message;
       break;
 
-    case 'SHOP_INVOICES_FOUND':
+    case 'SHOP_DOCUMENTS_FOUND':
       jobTotal += msg.count;
-      appendLog('info', '📋', `${shopLabel(msg.shop)}: ${msg.count} Rechnung(en) gefunden.`);
+      appendLog('info', '📋', `${shopLabel(msg.shop)}: ${msg.count} Dokument(e) gefunden.`);
       updateProgress();
       break;
 
-    case 'INVOICE_PROCESSING':
+    case 'DOCUMENT_PROCESSING':
       elCurrentItem.textContent = `${msg.current}/${msg.total}: ${msg.filename}`;
       break;
 
-    case 'INVOICE_UPLOADED':
+    case 'DOCUMENT_UPLOADED':
       jobDone++;
       appendLog('ok', '✓', msg.filename);
       updateProgress();
       break;
 
-    case 'INVOICE_SKIP':
+    case 'DOCUMENT_SKIP':
       jobDone++;
       appendLog('skip', '⟳', `${msg.filename} (bereits in ${msg.reason === 'paperless' ? 'Paperless' : 'Cache'})`);
       updateProgress();
       break;
 
-    case 'INVOICE_ERROR':
+    case 'DOCUMENT_CHECKED':
+      jobDone++;
+      updateProgress();
+      break;
+
+    case 'DISCOVERY_DONE':
+      running = false;
+      elBtnStart.textContent = idleLabel();
+      elBtnStart.classList.remove('cancel');
+      elCurrentItem.textContent = '';
+      elProgressBar.style.width = '100%';
+      appendLog('info', '🔎', `${msg.total} Dokument(e) gefunden, davon ${msg.fresh} neu. Unten auswählen und hochladen.`);
+      if (progressPort) { progressPort.disconnect(); progressPort = null; }
+      showDiscovery();
+      break;
+
+    case 'DOCUMENT_ERROR':
       jobDone++;
       appendLog('error', '✗', `${msg.filename}: ${msg.message}`);
       updateProgress();
@@ -226,6 +457,10 @@ function handleProgress(msg) {
       appendLog('ok', '✓', msg.message);
       break;
 
+    case 'DOCUMENT_DISCOVERED':
+      appendLog('info', '🗂', msg.message);
+      break;
+
     case 'SHOP_ERROR':
       appendLog('error', '✗', `${shopLabel(msg.shop)}: ${msg.message}`);
       break;
@@ -236,7 +471,7 @@ function handleProgress(msg) {
 
     case 'ALL_DONE':
       running = false;
-      elBtnStart.textContent = 'Download starten';
+      elBtnStart.textContent = idleLabel();
       elBtnStart.classList.remove('cancel');
       elCurrentItem.textContent = '';
       elProgressBar.style.width = '100%';
@@ -246,7 +481,7 @@ function handleProgress(msg) {
 
     case 'FATAL':
       running = false;
-      elBtnStart.textContent = 'Download starten';
+      elBtnStart.textContent = idleLabel();
       elBtnStart.classList.remove('cancel');
       appendLog('error', '✗', msg.message);
       if (progressPort) { progressPort.disconnect(); progressPort = null; }
@@ -261,8 +496,8 @@ function appendLog(type, icon, text) {
   entry.className = `log-entry ${type}`;
   entry.innerHTML = `<span class="log-icon">${icon}</span><span class="log-text">${escHtml(text)}</span>`;
   elLog.appendChild(entry);
-  // max 80 Einträge, älteste entfernen
-  while (elLog.children.length > 80) elLog.removeChild(elLog.firstChild);
+  // max 300 Einträge, älteste entfernen
+  while (elLog.children.length > 300) elLog.removeChild(elLog.firstChild);
   elLog.scrollTop = elLog.scrollHeight;
 }
 
@@ -274,11 +509,11 @@ function updateProgress() {
   }
 }
 
-function showSummary({ uploaded, duplicates, errors }) {
+function showSummary({ uploaded, duplicates, errors, discovered }) {
   elSummary.classList.add('visible');
   elSummary.innerHTML = `
-    <strong>Fertig!</strong>
-    <span>✓ ${uploaded} hochgeladen &nbsp;·&nbsp; ⟳ ${duplicates} übersprungen &nbsp;·&nbsp; ✗ ${errors} Fehler</span>
+    <strong>Dokumentanalyse abgeschlossen</strong>
+    <span>🗂 ${discovered || 0} erkannt &nbsp;·&nbsp; ✓ ${uploaded} archiviert &nbsp;·&nbsp; ⟳ ${duplicates} übersprungen &nbsp;·&nbsp; ✗ ${errors} Fehler</span>
   `;
 }
 
@@ -289,6 +524,8 @@ const SHOP_LABELS = {
   googleads: 'Google Ads', googlepay: 'Google Pay',
   linkedin: 'LinkedIn', metaads: 'Meta Ads', microsoft365: 'Microsoft 365',
   openaiapi: 'OpenAI API', paypal: 'PayPal', revolut: 'Revolut',
+  sapfiori: 'SAP Fiori / HR',
+  deutschegiganetz: 'Deutsche GigaNetz',
 };
 function shopLabel(id) { return SHOP_LABELS[id] || id; }
 
@@ -303,3 +540,4 @@ function escHtml(str) {
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
 loadSettings();
+restoreLastRun().then(() => { if (!running) return showDiscovery(); });

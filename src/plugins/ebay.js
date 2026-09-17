@@ -1,5 +1,5 @@
 /**
- * InvoiceFlow — eBay.de Plugin
+ * DocFlow — eBay.de Plugin
  *
  * Bestellhistorie: https://www.ebay.de/mye/myebay/purchase
  * Rechnungs-PDFs: Über "Kaufabwicklung" → Rechnungslink je Transaktion
@@ -7,7 +7,7 @@
  * Status: Grundgerüst — Selektoren müssen an aktuelles eBay-Frontend angepasst werden.
  */
 
-window.InvoiceFlowPlugin = (() => {
+window.DocFlowPlugin = (() => {
 
   const BASE_URL = 'https://www.ebay.de';
 
@@ -40,7 +40,7 @@ window.InvoiceFlowPlugin = (() => {
     name:    'eBay',
     domains: ['ebay.de'],
 
-    async getInvoices(dateFrom, dateTo) {
+    async getDocuments(dateFrom, dateTo) {
       const from = new Date(dateFrom);
       const to   = new Date(dateTo);
       to.setHours(23, 59, 59, 999);
@@ -87,7 +87,7 @@ window.InvoiceFlowPlugin = (() => {
             orderId,
             date: date.toISOString(),
             amount,
-            invoiceUrl: href.startsWith('http') ? href : BASE_URL + href,
+            documentUrl: href.startsWith('http') ? href : BASE_URL + href,
             filename:   _buildFilename(date, amount, orderId),
           });
         }
@@ -103,7 +103,7 @@ window.InvoiceFlowPlugin = (() => {
       return invoices;
     },
 
-    async fetchInvoice(url) {
+    async fetchDocument(url) {
       const resp = await fetch(url, {
         credentials: 'include',
         headers: { Accept: 'application/pdf, */*' },

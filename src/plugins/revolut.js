@@ -1,5 +1,5 @@
 // Revolut Business billing (business.revolut.com)
-window.InvoiceFlowPlugin = (() => {
+window.DocFlowPlugin = (() => {
   const _sleep = ms => new Promise(r => setTimeout(r, ms));
 
   function _fmtDate(d) {
@@ -73,7 +73,7 @@ window.InvoiceFlowPlugin = (() => {
     name: 'Revolut',
     domains: ['business.revolut.com'],
 
-    async getInvoices(dateFrom, dateTo) {
+    async getDocuments(dateFrom, dateTo) {
       const from = new Date(dateFrom);
       const to   = new Date(dateTo);
       to.setHours(23, 59, 59, 999);
@@ -152,7 +152,7 @@ window.InvoiceFlowPlugin = (() => {
           orderId:    id,
           date:       orderDate.toISOString(),
           amount,
-          invoiceUrl: pdfUrl,
+          documentUrl: pdfUrl,
           filename:   _filename(orderDate, amount, id),
         });
 
@@ -164,7 +164,7 @@ window.InvoiceFlowPlugin = (() => {
       return invoices;
     },
 
-    async fetchInvoice(url) {
+    async fetchDocument(url) {
       const resp = await fetch(url, {
         credentials: 'include',
         headers: { Accept: 'application/pdf,*/*' },

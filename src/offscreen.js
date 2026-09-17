@@ -1,5 +1,5 @@
 /**
- * InvoiceFlow — Offscreen Document
+ * DocFlow — Offscreen Document
  *
  * Läuft im normalen Browser-Rendering-Kontext, nicht im Service Worker.
  * Dadurch unterstützt fetch() hier Client-Zertifikate für mTLS.
@@ -37,11 +37,24 @@ async function handle(msg) {
     case 'GET_CUSTOM_FIELDS':
       return client.getCustomFields();
 
+    case 'GET_DOCUMENT_TYPES':
+      return client.getDocumentTypes();
+
+    case 'GET_CORRESPONDENTS':
+      return client.getCorrespondents();
+
     case 'UPLOAD_DOCUMENT': {
       // dataUrl kommt als base64-String vom Content Script via background
       const resp = await fetch(msg.dataUrl);
       const blob = await resp.blob();
-      return client.uploadDocument(blob, msg.filename, msg.tagIds ?? [], msg.customFields ?? []);
+      return client.uploadDocument(blob, msg.filename, {
+        tagIds:          msg.tagIds ?? [],
+        customFields:    msg.customFields ?? [],
+        created:         msg.created,
+        title:           msg.title,
+        documentTypeId:  msg.documentTypeId,
+        correspondentId: msg.correspondentId,
+      });
     }
 
     default:

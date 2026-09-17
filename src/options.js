@@ -11,11 +11,19 @@ const elSaveMsg = $('saveMsg');
 const elCustom  = $('customRangeFields');
 const elFrom    = $('customFrom');
 const elTo      = $('customTo');
+const elSapUrl     = $('sapStartUrl');
+const elSapPath    = $('sapServicePath');
+const elSapClient  = $('sapClient');
+const elBtnSapPerm = $('btnSapPermission');
+const elSapStatus  = $('sapStatus');
+const elDebug      = $('debugLogging');
 
 const SHOP_IDS = [
   'amazon', 'ebay', 'zalando', 'mediamarkt', 'otto',
   'aliexpress', 'chatgpt', 'github', 'googleads', 'googlepay',
   'linkedin', 'metaads', 'microsoft365', 'openaiapi', 'paypal', 'revolut',
+  'sapfiori',
+  'deutschegiganetz',
 ];
 
 const SHOP_LABELS = {
@@ -25,9 +33,13 @@ const SHOP_LABELS = {
   googleads: 'Google Ads', googlepay: 'Google Pay',
   linkedin: 'LinkedIn', metaads: 'Meta Ads', microsoft365: 'Microsoft 365',
   openaiapi: 'OpenAI API', paypal: 'PayPal', revolut: 'Revolut',
+  sapfiori: 'SAP Fiori / HR',
+  deutschegiganetz: 'Deutsche GigaNetz',
 };
 
-let _allCustomFields = [];
+let _allCustomFields   = [];
+let _allDocumentTypes  = [];
+let _allCorrespondents = [];
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
@@ -36,6 +48,7 @@ async function load() {
     'paperlessUrl', 'paperlessToken',
     'defaultDateRange', 'customFrom', 'customTo',
     'enabledShops', 'shopTags', 'tagIds', 'shopCustomFields',
+    'shopDocumentTypes', 'shopCorrespondents', 'sapConfig', 'debugLogging',
   ]);
 
   elUrl.value   = s.paperlessUrl   || '';
@@ -48,6 +61,15 @@ async function load() {
 
   elFrom.value = s.customFrom || '';
   elTo.value   = s.customTo   || '';
+
+  if (elDebug) elDebug.checked = Boolean(s.debugLogging);
+
+  if (elSapUrl) {
+    elSapUrl.value    = s.sapConfig?.startUrl    || '';
+    elSapPath.value   = s.sapConfig?.servicePath || '';
+    elSapClient.value = s.sapConfig?.client      || '';
+    if (s.sapConfig?.startUrl) refreshSapStatus(s.sapConfig.startUrl);
+  }
 
   const enabled = s.enabledShops || { amazon: true, ebay: true };
   for (const id of SHOP_IDS) {
@@ -64,10 +86,12 @@ async function load() {
 
   // Render custom fields section (initially empty fields list)
   renderCustomFieldsSection(s.shopCustomFields || {});
+  renderMetaSection(s.shopDocumentTypes || {}, s.shopCorrespondents || {});
 
   if (s.paperlessUrl && s.paperlessToken) {
     await loadAllTags(s.paperlessUrl, s.paperlessToken, shopTags);
     await loadAllCustomFields(s.paperlessUrl, s.paperlessToken, s.shopCustomFields || {});
+    await loadAllMeta(s.paperlessUrl, s.paperlessToken, s.shopDocumentTypes || {}, s.shopCorrespondents || {});
   }
 }
 
@@ -202,6 +226,7 @@ elBtnTest.addEventListener('click', async () => {
     showStatus('ok', 'Verbindung OK');
     await loadAllTags(url, token, getShopTagIds());
     await loadAllCustomFields(url, token, getShopCustomFields());
+    await loadAllMeta(url, token, getShopDocumentTypes(), getShopCorrespondents());
   } catch (e) {
     showStatus('error', e.message);
   } finally {
@@ -236,6 +261,16 @@ elBtnSave.addEventListener('click', async () => {
     }
   }
 
+  // SAP-Konfiguration validieren (leer = SAP-Quelle deaktiviert)
+  let sapConfig = null;
+  if (elSapUrl && elSapUrl.value.trim()) {
+    sapConfig = readSapConfig();
+    if (!sapConfig) {
+      showSaveMsg('error', 'SAP-Start-URL ist keine gültige http(s)-URL.');
+      return;
+    }
+  }
+
   const range       = document.querySelector('input[name="dateRange"]:checked')?.value || 'currentYear';
   const enabledShops = {};
   for (const id of SHOP_IDS) {
@@ -250,12 +285,113 @@ elBtnSave.addEventListener('click', async () => {
     customFrom:        elFrom.value,
     customTo:          elTo.value,
     enabledShops,
-    shopTags:          getShopTagIds(),
-    shopCustomFields:  getShopCustomFields(),
+    shopTags:           getShopTagIds(),
+    shopCustomFields:   getShopCustomFields(),
+    shopDocumentTypes:  getShopDocumentTypes(),
+    shopCorrespondents: getShopCorrespondents(),
+    sapConfig,
+    debugLogging:       Boolean(elDebug?.checked),
   });
 
-  showSaveMsg('ok', 'Gespeichert.');
-  setTimeout(() => { elSaveMsg.textContent = ''; }, 3000);
+  // Content-Script-Registrierung im Background aktualisieren
+  let sapNote = '';
+  if (sapConfig) {
+    const ok = await notifySapConfig(sapConfig);
+    const warning = sapUrlWarning(sapConfig.startUrl);
+    if (warning) sapNote = ` SAP: ${warning}`;
+    else if (!ok) sapNote = ' SAP: Host-Zugriff fehlt noch — bitte „Zugriff erlauben" klicken.';
+    refreshSapStatus(sapConfig.startUrl);
+  } else {
+    await notifySapConfig(null);
+  }
+
+  showSaveMsg(sapNote ? 'error' : 'ok', 'Gespeichert.' + sapNote);
+  setTimeout(() => { elSaveMsg.textContent = ''; }, sapNote ? 8000 : 3000);
+});
+
+// ─── SAP / Fiori ──────────────────────────────────────────────────────────────
+
+function readSapConfig() {
+  const startUrl = elSapUrl?.value.trim() || '';
+  if (!startUrl) return null;
+  try {
+    const u = new URL(startUrl);
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  } catch {
+    return null;
+  }
+  return {
+    startUrl,
+    servicePath: (elSapPath?.value.trim() || '').replace(/\/+$/, ''),
+    client:      elSapClient?.value.trim() || '',
+  };
+}
+
+async function notifySapConfig(sapConfig) {
+  try {
+    const res = await chrome.runtime.sendMessage({ action: 'SAP_CONFIG_UPDATED', sapConfig });
+    return Boolean(res?.success);
+  } catch {
+    return false;
+  }
+}
+
+function showSapStatus(type, text) {
+  if (!elSapStatus) return;
+  elSapStatus.style.display = 'inline-flex';
+  elSapStatus.className = `connection-status status-${type}`;
+  elSapStatus.textContent = text;
+}
+
+function sapUrlWarning(url) {
+  try {
+    const u = new URL(url);
+    if (/successfactors|sapsf\./i.test(u.host)) {
+      return 'Das ist SuccessFactors, nicht die SAP-Fiori-App. Bitte die Adresse der Seite mit den Entgeltnachweisen eintragen.';
+    }
+    if (!/\/sap\//i.test(u.pathname)) {
+      return 'Die Adresse enthält keinen /sap/-Pfad und ist vermutlich keine SAP-Fiori-App.';
+    }
+  } catch { /* ungültige URL wird anderswo gemeldet */ }
+  return '';
+}
+
+async function refreshSapStatus(url) {
+  const warning = sapUrlWarning(url);
+  if (warning) {
+    showSapStatus('error', warning);
+    return;
+  }
+  const ok = await hasHostPermission(url);
+  showSapStatus(ok ? 'ok' : 'error', ok ? 'Zugriff erteilt' : 'Zugriff fehlt');
+}
+
+// Eigener Button: chrome.permissions.request() braucht eine User-Geste, und
+// ein zweiter Dialog im selben Save-Klick (nach dem Paperless-Dialog) verliert
+// die Aktivierung. Hier: Permission holen → Registrierung im Background anstoßen.
+elBtnSapPerm?.addEventListener('click', async () => {
+  const cfg = readSapConfig();
+  if (!cfg) {
+    showSapStatus('error', 'Bitte zuerst eine gültige Start-URL eingeben.');
+    return;
+  }
+  elBtnSapPerm.disabled = true;
+  try {
+    const already = await hasHostPermission(cfg.startUrl);
+    const granted = already || await requestHostPermission(cfg.startUrl);
+    if (!granted) {
+      showSapStatus('error', 'Zugriff verweigert.');
+      return;
+    }
+    // Nur registrieren, wenn die Konfiguration auch gespeichert wurde/wird
+    await chrome.storage.sync.set({ sapConfig: cfg });
+    const ok = await notifySapConfig(cfg);
+    const warning = sapUrlWarning(cfg.startUrl);
+    if (warning) showSapStatus('error', `Zugriff erteilt, aber: ${warning}`);
+    else showSapStatus(ok ? 'ok' : 'error', ok ? 'Zugriff erteilt — SAP-Plugin aktiv' : 'Registrierung fehlgeschlagen');
+  } finally {
+    elBtnSapPerm.disabled = false;
+  }
 });
 
 function getShopTagIds() {
@@ -446,6 +582,101 @@ function getShopCustomFields() {
   }
   return result;
 }
+
+// ─── Dokumenttyp & Korrespondent ──────────────────────────────────────────────
+
+async function _fetchPaperlessList(baseUrl, token, apiPath) {
+  const url = baseUrl.replace(/\/+$/, '') + apiPath;
+  const res = await fetch(url, { headers: { Authorization: `Token ${token}`, Accept: 'application/json' }, credentials: 'include' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  return data.results || [];
+}
+
+async function loadAllMeta(baseUrl, token, savedTypes, savedCorrs) {
+  try {
+    _allDocumentTypes = await _fetchPaperlessList(baseUrl, token, '/api/document_types/?page_size=500');
+  } catch (e) {
+    console.warn('Dokumenttypen konnten nicht geladen werden:', e.message);
+    _allDocumentTypes = [];
+  }
+  try {
+    _allCorrespondents = await _fetchPaperlessList(baseUrl, token, '/api/correspondents/?page_size=500');
+  } catch (e) {
+    console.warn('Korrespondenten konnten nicht geladen werden:', e.message);
+    _allCorrespondents = [];
+  }
+  renderMetaSection(savedTypes, savedCorrs);
+}
+
+function _buildMetaSelect(id, items, selectedId, emptyLabel) {
+  const sel = document.createElement('select');
+  sel.id = id;
+  sel.className = 'meta-select';
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = emptyLabel;
+  sel.appendChild(none);
+  for (const item of items) {
+    const opt = document.createElement('option');
+    opt.value = String(item.id);
+    opt.textContent = item.name;
+    if (selectedId != null && Number(selectedId) === item.id) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  // Gespeicherten Wert behalten, auch wenn die Liste (noch) nicht geladen ist
+  if (selectedId != null && !items.some(i => i.id === Number(selectedId))) {
+    const keep = document.createElement('option');
+    keep.value = String(selectedId);
+    keep.textContent = `#${selectedId}`;
+    keep.selected = true;
+    sel.appendChild(keep);
+  }
+  return sel;
+}
+
+function renderMetaSection(savedTypes, savedCorrs) {
+  const container = document.getElementById('shopMetaList');
+  if (!container) return;
+  container.innerHTML = '';
+
+  for (const shopId of SHOP_IDS) {
+    const row = document.createElement('div');
+    row.className = 'meta-row';
+
+    const label = document.createElement('span');
+    label.className = 'shop-tag-label';
+    label.textContent = SHOP_LABELS[shopId] || shopId;
+
+    const typeCap = document.createElement('span');
+    typeCap.className = 'meta-caption';
+    typeCap.textContent = 'Typ';
+
+    const corrCap = document.createElement('span');
+    corrCap.className = 'meta-caption';
+    corrCap.textContent = 'Korrespondent';
+
+    row.appendChild(label);
+    row.appendChild(typeCap);
+    row.appendChild(_buildMetaSelect(`doctype-${shopId}`, _allDocumentTypes, savedTypes?.[shopId], '— kein Dokumenttyp —'));
+    row.appendChild(corrCap);
+    row.appendChild(_buildMetaSelect(`correspondent-${shopId}`, _allCorrespondents, savedCorrs?.[shopId], '— kein Korrespondent —'));
+    container.appendChild(row);
+  }
+}
+
+function _readMetaSelects(prefix) {
+  const result = {};
+  for (const shopId of SHOP_IDS) {
+    const sel = document.getElementById(`${prefix}-${shopId}`);
+    const n   = sel ? Number(sel.value) : NaN;
+    result[shopId] = Number.isInteger(n) && n > 0 ? n : null;
+  }
+  return result;
+}
+
+function getShopDocumentTypes()  { return _readMetaSelects('doctype'); }
+function getShopCorrespondents() { return _readMetaSelects('correspondent'); }
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 

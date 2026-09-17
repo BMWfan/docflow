@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "InvoiceFlow",
-  "version": "0.2.5",
-  "description": "Lädt Rechnungen von Amazon, eBay, Zalando & Co automatisch in Paperless-ngx hoch.",
+  "name": "DocFlow",
+  "version": "0.3.0",
+  "description": "Archiviert Dokumente aus Online-Diensten, SAP/Fiori und Webportalen automatisch in Paperless-ngx.",
 
   "permissions": [
     "storage",
@@ -40,7 +40,8 @@
     "*://admin.microsoft.com/*",
     "*://admin.cloud.microsoft/*",
     "*://www.paypal.com/*",
-    "*://business.revolut.com/*"
+    "*://business.revolut.com/*",
+    "*://kundenportal.deutsche-giganetz.de/*"
   ],
 
   "background": {
@@ -152,6 +153,17 @@
       "matches": ["*://business.revolut.com/*"],
       "js": ["src/content.js", "src/plugins/revolut.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://kundenportal.deutsche-giganetz.de/*"],
+      "js": ["src/content.js", "src/plugins/deutschegiganetz.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://kundenportal.deutsche-giganetz.de/*"],
+      "js": ["src/plugins/deutschegiganetz-inject.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
     }
   ]
 }

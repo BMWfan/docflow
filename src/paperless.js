@@ -23,25 +23,64 @@ export class PaperlessClient {
 
   /**
    * Prüft, ob ein Dokument mit der orderId bereits existiert.
-   * Zuerst lokaler Cache (chrome.storage.local), dann Paperless API.
+   * Bevorzugt den Dateinamen-Filter (exakter Token im Original-Dateinamen);
+   * fällt auf die Volltextsuche zurück, wenn der Filter nicht verfügbar ist
+   * oder das Ergebnis den Token nicht wirklich enthält (ältere Versionen
+   * ignorieren unbekannte Filter und liefern sonst alle Dokumente).
    */
   async checkDuplicate(orderId) {
-    const url = `/api/documents/?query=${encodeURIComponent(orderId)}&page_size=1`;
-    const data = await this._get(url);
+    const needle = encodeURIComponent(orderId);
+    try {
+      const data = await this._get(`/api/documents/?original_filename__icontains=${needle}&page_size=1&fields=id,original_filename`);
+      if (typeof data.count === 'number') {
+        if (data.count === 0) return false;
+        const first = data.results?.[0];
+        const name  = String(first?.original_filename ?? '').toLowerCase();
+        if (name.includes(String(orderId).toLowerCase())) return true;
+      }
+    } catch (_) {
+      // Filter nicht unterstützt → Volltext-Fallback
+    }
+    const data = await this._get(`/api/documents/?query=${needle}&page_size=1`);
     return data.count > 0;
   }
 
   /**
    * Lädt ein PDF als Multipart-POST hoch.
-   * @param {Blob}     blob
-   * @param {string}   filename   z.B. "20240315_29,99EUR_amazon_302-xxx.pdf"
-   * @param {number[]} tagIds
-   * @param {{fieldId:number, value:string}[]} customFields
+   * @param {Blob}   blob
+   * @param {string} filename   z.B. "20240315_29,99EUR_amazon_302-xxx.pdf"
+   * @param {object} [opts]
+   * @param {number[]} [opts.tagIds]
+   * @param {{fieldId:number, value:string}[]} [opts.customFields]
+   * @param {string}  [opts.created]          "YYYY-MM-DD"
+   * @param {string}  [opts.title]            Standard: Dateiname ohne .pdf
+   * @param {number}  [opts.documentTypeId]
+   * @param {number}  [opts.correspondentId]
+   *
+   * Legacy-Signatur uploadDocument(blob, filename, tagIds[], customFields[])
+   * wird weiterhin akzeptiert.
    */
-  async uploadDocument(blob, filename, tagIds = [], customFields = []) {
+  async uploadDocument(blob, filename, opts = {}, legacyCustomFields) {
+    if (Array.isArray(opts)) {
+      opts = { tagIds: opts, customFields: legacyCustomFields ?? [] };
+    }
+    const {
+      tagIds = [],
+      customFields = [],
+      created,
+      title,
+      documentTypeId,
+      correspondentId,
+    } = opts ?? {};
+
     const form = new FormData();
     form.append('document', blob, filename);
-    form.append('title', filename.replace(/\.pdf$/i, ''));
+    form.append('title', (title && String(title).trim()) || filename.replace(/\.pdf$/i, ''));
+    if (typeof created === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(created)) {
+      form.append('created', created);
+    }
+    if (Number.isInteger(documentTypeId))  form.append('document_type', String(documentTypeId));
+    if (Number.isInteger(correspondentId)) form.append('correspondent',  String(correspondentId));
     tagIds.forEach(id => form.append('tags', String(id)));
     if (customFields.length > 0) {
       // Paperless erwartet {"<fieldId>": "<value>"} als JSON-String
@@ -74,6 +113,18 @@ export class PaperlessClient {
   /** Gibt alle benutzerdefinierten Felder zurück. */
   async getCustomFields() {
     const data = await this._get('/api/custom_fields/?page_size=500');
+    return data.results ?? [];
+  }
+
+  /** Gibt alle Dokumenttypen zurück. */
+  async getDocumentTypes() {
+    const data = await this._get('/api/document_types/?page_size=500');
+    return data.results ?? [];
+  }
+
+  /** Gibt alle Korrespondenten zurück. */
+  async getCorrespondents() {
+    const data = await this._get('/api/correspondents/?page_size=500');
     return data.results ?? [];
   }
 }

@@ -25,10 +25,72 @@ const SHOP_START_URL = {
   openaiapi:    'https://platform.openai.com/settings/organization/billing/history',
   paypal:       'https://www.paypal.com/reports/accountStatements',
   revolut:      'https://business.revolut.com/billing',
+  deutschegiganetz: 'https://kundenportal.deutsche-giganetz.de/invoices',
+  // sapfiori: Start-URL kommt aus den Einstellungen (sapConfig.startUrl)
 };
 
 // Shops mit Amazon-CSD-Problem: Tab-Navigation statt internes fetch()
 const SHOPS_USE_PAGE_NAVIGATION = new Set(['amazon']);
+
+// ─── SAP / Fiori: konfigurierbarer Host ──────────────────────────────────────
+// Der SAP-Host ist nicht im Manifest hinterlegt. Der Nutzer trägt die Fiori-
+// Start-URL in den Einstellungen ein; daraus wird der Origin abgeleitet, die
+// optionale Host-Permission angefordert und das Content Script dynamisch
+// registriert (chrome.scripting.registerContentScripts).
+
+const SAP_SCRIPT_ID = 'docflow-sapfiori';
+
+function sapOrigin(startUrl) {
+  try {
+    const u = new URL(String(startUrl || ''));
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
+
+function sapMatchPattern(startUrl) {
+  const origin = sapOrigin(startUrl);
+  return origin ? `${origin}/*` : null;
+}
+
+function resolveStartUrl(shopId, config) {
+  if (shopId === 'sapfiori') return sapOrigin(config?.sapConfig?.startUrl) ? config.sapConfig.startUrl : null;
+  return SHOP_START_URL[shopId] ?? null;
+}
+
+/**
+ * Registriert das SAP-Content-Script für den konfigurierten Host neu.
+ * Liefert true, wenn eine Registrierung aktiv ist, sonst false
+ * (keine/ungültige Start-URL oder fehlende Host-Permission).
+ */
+async function ensureSapContentScript(sapConfig) {
+  await chrome.scripting.unregisterContentScripts({ ids: [SAP_SCRIPT_ID] }).catch(() => {});
+
+  const pattern = sapMatchPattern(sapConfig?.startUrl);
+  if (!pattern) return false;
+
+  const allowed = await chrome.permissions.contains({ origins: [pattern] }).catch(() => false);
+  if (!allowed) return false;
+
+  await chrome.scripting.registerContentScripts([{
+    id:                   SAP_SCRIPT_ID,
+    js:                   ['src/content.js', 'src/plugins/sapfiori.js'],
+    matches:              [pattern],
+    runAt:                'document_idle',
+    persistAcrossSessions: true,
+  }]);
+  return true;
+}
+
+// Dynamische Registrierungen überleben Browser-Neustarts, aber nicht
+// Extension-Updates/Reloads → beim Installieren/Aktualisieren erneuern.
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.storage.sync.get('sapConfig')
+    .then(({ sapConfig }) => ensureSapContentScript(sapConfig))
+    .catch(() => {});
+});
 
 // ─── Messaging ────────────────────────────────────────────────────────────────
 
@@ -53,6 +115,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.action === 'GET_STATUS') {
     sendResponse({ running: !!activeJob });
     return false;
+  }
+  if (msg.action === 'SAP_CONFIG_UPDATED') {
+    ensureSapContentScript(msg.sapConfig)
+      .then(ok => sendResponse({ success: ok }))
+      .catch(err => sendResponse({ error: err.message }));
+    return true;
   }
 });
 
@@ -95,11 +163,26 @@ function paperless(action, paperlessUrl, paperlessToken, params = {}) {
   });
 }
 
-// ─── Haupt-Download-Logik ─────────────────────────────────────────────────────
+// ─── Haupt-Dokumentlogik ──────────────────────────────────────────────────────
 
 async function startDownload(config) {
-  const { shops, dateFrom, dateTo, paperlessUrl, paperlessToken, shopTags = {}, shopCustomFields = {} } = config;
+  const {
+    shops, dateFrom, dateTo, paperlessUrl, paperlessToken,
+    shopTags = {}, shopCustomFields = {},
+    shopDocumentTypes = {}, shopCorrespondents = {},
+    sapConfig = null,
+    debugLogging = false,
+  } = config;
 
+  // direct   = finden und sofort hochladen (bisheriges Verhalten)
+  // discover = nur finden + Duplikate prüfen, Liste zur Auswahl speichern
+  // upload   = Quellen neu lesen und nur die ausgewählten orderIds hochladen
+  const mode      = config.mode === 'discover' || config.mode === 'upload' ? config.mode : 'direct';
+  const selection = mode === 'upload' ? normaliseSelection(config.selection) : null;
+  const shopsToRun = mode === 'upload' ? (shops || []).filter(id => selection.has(id)) : (shops || []);
+  const discovered = [];
+
+  await startRunLog();
   await ensureOffscreen();
 
   emit({ type: 'STATUS', message: 'Verbinde mit Paperless-ngx…' });
@@ -117,74 +200,115 @@ async function startDownload(config) {
   let totalUploaded   = 0;
   let totalDuplicates = 0;
   let totalErrors     = 0;
+  let totalDiscovered = 0;
 
-  for (const shopId of shops) {
+  for (const shopId of shopsToRun) {
     if (activeJob.cancelled) break;
-    if (!SHOP_START_URL[shopId]) continue;
 
     emit({ type: 'SHOP_START', shop: shopId });
 
+    // Quellenspezifische Konfiguration, die an das Plugin durchgereicht wird
+    const sourceConfig = shopId === 'sapfiori'
+      ? { ...(sapConfig ?? {}), debug: Boolean(debugLogging) }
+      : undefined;
+
     let tab;
     try {
-      tab = await openTab(SHOP_START_URL[shopId]);
+      const startUrl = resolveStartUrl(shopId, config);
+      if (!startUrl) {
+        throw new Error(shopId === 'sapfiori'
+          ? 'SAP-Start-URL nicht konfiguriert — siehe Einstellungen.'
+          : `Keine Start-URL für ${shopId}.`);
+      }
+      if (shopId === 'sapfiori' && !(await ensureSapContentScript(sapConfig))) {
+        throw new Error('Zugriff auf den SAP-Host fehlt — in den Einstellungen "Zugriff erlauben" klicken.');
+      }
+
+      tab = await openTab(startUrl);
       await waitForTabLoad(tab.id);
-      await waitForLoginIfNeeded(tab.id, shopId, SHOP_START_URL[shopId]);
+      await waitForLoginIfNeeded(tab.id, shopId, startUrl);
       await sleep(1200);
 
-      emit({ type: 'SHOP_STATUS', shop: shopId, message: 'Lade Bestellliste…' });
+      emit({ type: 'SHOP_STATUS', shop: shopId, message: 'Analysiere Dokumentquellen…' });
 
-      let invoices;
+      let documents;
       if (SHOPS_USE_PAGE_NAVIGATION.has(shopId)) {
-        invoices = await collectInvoicesViaNavigation(tab.id, shopId, dateFrom, dateTo);
+        documents = await collectDocumentsViaNavigation(tab.id, shopId, dateFrom, dateTo);
       } else {
-        const listResult = await sendToTab(tab.id, { action: 'GET_INVOICES', dateFrom, dateTo }, 120_000);
+        const listResult = await sendToTab(tab.id, { action: 'GET_DOCUMENTS', dateFrom, dateTo, sourceConfig }, 120_000);
         if (listResult.error) throw new Error(listResult.error);
-        invoices = listResult.invoices ?? [];
+        documents = listResult.documents ?? listResult.invoices ?? [];
       }
-      emit({ type: 'SHOP_INVOICES_FOUND', shop: shopId, count: invoices.length });
 
-      for (let i = 0; i < invoices.length; i++) {
+      if (mode === 'upload') {
+        const wanted   = selection.get(shopId);
+        const foundIds = new Set(documents.map(d => String(d.orderId)));
+        for (const id of wanted) {
+          if (!foundIds.has(id)) {
+            emit({ type: 'DOCUMENT_ERROR', filename: id, message: 'Beim erneuten Abruf nicht mehr gefunden.' });
+            totalErrors++;
+          }
+        }
+        documents = documents.filter(d => wanted.has(String(d.orderId)));
+      }
+
+      totalDiscovered += documents.length;
+      emit({ type: 'SHOP_DOCUMENTS_FOUND', shop: shopId, count: documents.length });
+      emit({ type: 'DOCUMENT_DISCOVERED', shop: shopId, message: `${documents.length} Dokumente erkannt` });
+
+      for (let i = 0; i < documents.length; i++) {
         if (activeJob.cancelled) break;
 
-        const inv = invoices[i];
-        emit({ type: 'INVOICE_PROCESSING', shop: shopId, filename: inv.filename, current: i + 1, total: invoices.length });
+        const doc = documents[i];
+        emit({ type: 'DOCUMENT_PROCESSING', shop: shopId, filename: doc.filename, current: i + 1, total: documents.length });
 
         try {
-          // 1. Lokaler Cache
-          if (await isLocalCached(inv.orderId)) {
-            emit({ type: 'INVOICE_SKIP', filename: inv.filename, reason: 'cache' });
-            totalDuplicates++;
+          // 1. Lokaler Cache, 2. Paperless-Duplikatprüfung (Offscreen → mTLS)
+          let status = 'new';
+          if (await isLocalCached(doc.orderId)) {
+            status = 'cache';
+          } else if (await paperless('CHECK_DUPLICATE', paperlessUrl, paperlessToken, { orderId: doc.orderId })) {
+            await addLocalCache(doc.orderId);
+            status = 'paperless';
+          }
+
+          if (mode === 'discover') {
+            discovered.push(summarizeDocument(shopId, doc, status));
+            if (status !== 'new') totalDuplicates++;
+            emit({ type: 'DOCUMENT_CHECKED', shop: shopId });
             continue;
           }
 
-          // 2. Paperless-Duplikatprüfung (läuft im Offscreen → mTLS)
-          const exists = await paperless('CHECK_DUPLICATE', paperlessUrl, paperlessToken, { orderId: inv.orderId });
-          if (exists) {
-            await addLocalCache(inv.orderId);
-            emit({ type: 'INVOICE_SKIP', filename: inv.filename, reason: 'paperless' });
+          if (status !== 'new') {
+            emit({ type: 'DOCUMENT_SKIP', filename: doc.filename, reason: status });
             totalDuplicates++;
             continue;
           }
 
           // 3. PDF vom Shop laden (Content Script im Tab → Session-Cookies)
-          const fetchResult = await sendToTab(tab.id, { action: 'FETCH_INVOICE', url: inv.invoiceUrl }, 45_000);
+          const fetchResult = await sendToTab(tab.id, { action: 'FETCH_DOCUMENT', url: doc.documentUrl ?? doc.invoiceUrl, sourceConfig }, 45_000);
           if (fetchResult.error) throw new Error(fetchResult.error);
-          if (fetchResult.dataUrl.length < 500) throw new Error('PDF zu klein — kein gültiges Dokument.');
+          if (!fetchResult.dataUrl || fetchResult.dataUrl.length < 500) throw new Error('PDF zu klein — kein gültiges Dokument.');
+          if (isHtmlResult(fetchResult)) throw new Error('Kein PDF erhalten (HTML) — Session abgelaufen?');
 
           // 4. Upload über Offscreen Document (mTLS)
           await paperless('UPLOAD_DOCUMENT', paperlessUrl, paperlessToken, {
-            dataUrl:      fetchResult.dataUrl,
-            filename:     inv.filename,
-            tagIds:       shopTags[shopId] ?? [],
-            customFields: shopCustomFields[shopId] ?? [],
+            dataUrl:         fetchResult.dataUrl,
+            filename:        doc.filename,
+            tagIds:          shopTags[shopId] ?? [],
+            customFields:    shopCustomFields[shopId] ?? [],
+            created:         toIsoDate(doc.date),
+            title:           doc.title,
+            documentTypeId:  toIntOrNull(shopDocumentTypes[shopId]),
+            correspondentId: toIntOrNull(shopCorrespondents[shopId]),
           });
 
-          await addLocalCache(inv.orderId);
-          emit({ type: 'INVOICE_UPLOADED', filename: inv.filename });
+          await addLocalCache(doc.orderId);
+          emit({ type: 'DOCUMENT_UPLOADED', filename: doc.filename });
           totalUploaded++;
 
         } catch (err) {
-          emit({ type: 'INVOICE_ERROR', filename: inv.filename, message: err.message });
+          emit({ type: 'DOCUMENT_ERROR', filename: doc.filename, message: err.message });
           totalErrors++;
         }
 
@@ -202,12 +326,56 @@ async function startDownload(config) {
 
   activeJob = null;
   await closeOffscreen();
-  emit({ type: 'ALL_DONE', uploaded: totalUploaded, duplicates: totalDuplicates, errors: totalErrors });
+
+  if (mode === 'discover') {
+    const fresh = discovered.filter(d => d.status === 'new').length;
+    await chrome.storage.local.set({
+      lastDiscovery: { createdAt: Date.now(), dateFrom, dateTo, shops: shopsToRun, documents: discovered },
+    }).catch(() => {});
+    emit({ type: 'DISCOVERY_DONE', total: discovered.length, fresh, duplicates: totalDuplicates, errors: totalErrors });
+    return;
+  }
+  if (mode === 'upload') {
+    await chrome.storage.local.remove('lastDiscovery').catch(() => {});
+  }
+
+  emit({
+    type: 'ALL_DONE',
+    uploaded: totalUploaded,
+    duplicates: totalDuplicates,
+    errors: totalErrors,
+    discovered: totalDiscovered,
+  });
+}
+
+// ─── Auswahl vor dem Hochladen ────────────────────────────────────────────────
+
+/** { shopId: [orderId, …] } → Map<shopId, Set<orderId>> (leere Quellen entfallen) */
+function normaliseSelection(selection) {
+  const map = new Map();
+  if (!selection || typeof selection !== 'object') return map;
+  for (const [shopId, ids] of Object.entries(selection)) {
+    const set = new Set((Array.isArray(ids) ? ids : []).map(String).filter(Boolean));
+    if (set.size) map.set(shopId, set);
+  }
+  return map;
+}
+
+/** Nur das, was das Popup zur Auswahl braucht — keine URLs, keine Metadaten. */
+function summarizeDocument(shopId, doc, status) {
+  return {
+    shop:     shopId,
+    orderId:  String(doc.orderId),
+    filename: String(doc.filename || ''),
+    date:     doc.date ?? null,
+    category: doc.category ?? null,
+    status,
+  };
 }
 
 // ─── Shop-spezifische Navigationsfunktion für CSD-geschützte Seiten ──────────
 
-async function collectInvoicesViaNavigation(tabId, shopId, dateFrom, dateTo) {
+async function collectDocumentsViaNavigation(tabId, shopId, dateFrom, dateTo) {
   const yearFrom = new Date(dateFrom).getFullYear();
   const yearTo   = new Date(dateTo).getFullYear();
   const all      = [];
@@ -238,10 +406,10 @@ async function collectInvoicesViaNavigation(tabId, shopId, dateFrom, dateTo) {
       }
       if (!ready) throw new Error('Content Script nicht bereit nach 20 Versuchen');
 
-      const result = await sendToTab(tabId, { action: 'GET_INVOICES_PAGE', dateFrom, dateTo }, 45_000);
+      const result = await sendToTab(tabId, { action: 'GET_DOCUMENTS_PAGE', dateFrom, dateTo }, 45_000);
       if (result.error) throw new Error(result.error);
 
-      all.push(...(result.invoices ?? []));
+      all.push(...(result.documents ?? result.invoices ?? []));
       pageUrl = result.nextUrl || null;
       if (pageUrl) await sleep(800 + Math.random() * 400);
     }
@@ -262,8 +430,11 @@ function isLoginRedirect(url) {
     u.includes('/s/login')                    ||
     u.includes('accounts.google.com')         ||
     u.includes('login.microsoftonline.com')   ||
+    u.includes('ciamlogin.com')               ||
     u.includes('signin.ebay.')                ||
-    u.includes('identity.linkedin.com')
+    u.includes('identity.linkedin.com')       ||
+    u.includes('/saml2/')                     ||   // SAP SAML-Logon
+    u.includes('/sap/bc/sec/')                     // SAP Logon-Seiten
   );
 }
 
@@ -302,7 +473,73 @@ async function waitForLoginIfNeeded(tabId, shopId, intendedUrl) {
 
 // ─── Hilfsfunktionen ─────────────────────────────────────────────────────────
 
+/**
+ * Normalisiert ein Dokumentdatum zu "YYYY-MM-DD" (lokale Zeitzone, damit
+ * ein von einem Plugin um lokale Mitternacht erzeugtes Datum nicht auf den
+ * Vortag rutscht). Liefert undefined bei fehlendem/ungültigem Wert.
+ */
+function toIsoDate(value) {
+  if (value == null || value === '') return undefined;
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return undefined;
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function toIntOrNull(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function isHtmlResult(fetchResult) {
+  const mime = String(fetchResult.mimeType || '').toLowerCase();
+  return mime.startsWith('text/html') || String(fetchResult.dataUrl || '').startsWith('data:text/html');
+}
+
+// ─── Protokoll des letzten Laufs ─────────────────────────────────────────────
+// Das Popup schließt sich, sobald ein anderer Tab/Fenster den Fokus bekommt
+// (z. B. beim Login). Damit Meldungen nicht verloren gehen, wird jeder Lauf in
+// chrome.storage.local gespiegelt und beim nächsten Öffnen des Popups angezeigt.
+
+const RUN_LOG_KEY  = 'lastRun';
+const RUN_LOG_MAX  = 300;
+const RUN_LOG_SKIP = new Set(['DOCUMENT_PROCESSING', 'DOCUMENT_CHECKED', 'SHOP_STATUS']);
+const RUN_FINAL    = new Set(['ALL_DONE', 'FATAL', 'DISCOVERY_DONE']);
+let runLog      = null;
+let runLogTimer = null;
+
+function startRunLog() {
+  runLog = { startedAt: Date.now(), finishedAt: null, running: true, events: [] };
+  return persistRunLog(true);
+}
+
+function recordRunEvent(data) {
+  if (!runLog || !data || RUN_LOG_SKIP.has(data.type)) return;
+  runLog.events.push({ t: Date.now(), ...data });
+  if (runLog.events.length > RUN_LOG_MAX) {
+    runLog.events.splice(0, runLog.events.length - RUN_LOG_MAX);
+  }
+  const final = RUN_FINAL.has(data.type);
+  if (final) {
+    runLog.running    = false;
+    runLog.finishedAt = Date.now();
+  }
+  persistRunLog(final);
+}
+
+function persistRunLog(immediate) {
+  if (!runLog) return Promise.resolve();
+  if (runLogTimer) { clearTimeout(runLogTimer); runLogTimer = null; }
+  const snapshot = { ...runLog, events: [...runLog.events] };
+  const write = () => chrome.storage.local.set({ [RUN_LOG_KEY]: snapshot }).catch(() => {});
+  if (immediate) return write();
+  runLogTimer = setTimeout(() => { runLogTimer = null; persistRunLog(true); }, 250);
+  return Promise.resolve();
+}
+
 function emit(data) {
+  recordRunEvent(data);
   if (progressPort) {
     try { progressPort.postMessage(data); } catch (_) {}
   }
@@ -312,15 +549,37 @@ function openTab(url) {
   return new Promise(resolve => chrome.tabs.create({ url, active: false }, resolve));
 }
 
-function waitForTabLoad(tabId) {
-  return new Promise(resolve => {
+function waitForTabLoad(tabId, timeoutMs = 45_000) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const cancelPoll = setInterval(() => {
+      if (activeJob?.cancelled) finish(new Error('Abgebrochen.'));
+    }, 500);
+    const timeoutTimer = setTimeout(
+      () => finish(new Error(`Tab-Ladezeit überschritten (${timeoutMs}ms).`)),
+      timeoutMs
+    );
+
+    function finish(err) {
+      if (done) return;
+      done = true;
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      clearInterval(cancelPoll);
+      clearTimeout(timeoutTimer);
+      if (err) reject(err); else resolve();
+    }
+
     function onUpdated(id, info) {
-      if (id === tabId && info.status === 'complete') {
-        chrome.tabs.onUpdated.removeListener(onUpdated);
-        resolve();
-      }
+      if (id === tabId && info.status === 'complete') finish();
     }
     chrome.tabs.onUpdated.addListener(onUpdated);
+
+    // Race-Fix: Der Tab kann bereits vor der Listener-Registrierung fertig
+    // geladen sein (z.B. bei sehr schnellen Seiten) — dann würde das
+    // 'complete'-Event nie (erneut) feuern und wir würden für immer hängen.
+    chrome.tabs.get(tabId).then(tab => {
+      if (tab?.status === 'complete') finish();
+    }).catch(() => {});
   });
 }
 

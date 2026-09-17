@@ -1,274 +1,237 @@
-# InvoiceFlow
+# DocFlow
 
-A Chrome / Edge browser extension (Manifest V3) that automatically downloads invoices from online shops and services and uploads them directly to [Paperless-ngx](https://docs.paperless-ngx.com) — with duplicate detection via the Paperless API and a local cache.
+DocFlow is a Chrome / Edge extension for automatically collecting documents from online services, SAP/Fiori systems, subscription portals, and enterprise platforms and archiving them directly into Paperless-ngx.
+
+Originally focused on invoice downloads, the project now supports broader document ingestion workflows including:
+
+- invoices
+- payroll statements
+- HR documents
+- SAP/Fiori PDFs
+- DEÜV documents
+- subscription receipts
+- billing exports
+- enterprise portal downloads
+
+The extension uses the browser's existing authenticated sessions and uploads documents directly into Paperless-ngx.
 
 ---
 
-## Supported Shops & Services
+## Supported Sources
 
 ### Online Shops
-| Shop | Domains |
-|---|---|
-| Amazon | amazon.de · amazon.com · amazon.co.uk · amazon.fr · amazon.it · amazon.es |
-| eBay | ebay.de |
-| Zalando | zalando.de |
-| MediaMarkt | mediamarkt.de |
-| Otto | otto.de |
-| AliExpress | aliexpress.com |
-| GitHub | github.com/billing |
 
-### Services & Subscriptions
-| Service | Domain |
-|---|---|
-| PayPal | paypal.com |
-| ChatGPT | pay.openai.com |
-| Google Ads | ads.google.com |
-| Google Pay | payments.google.com |
-| LinkedIn | linkedin.com |
-| Meta Ads | business.facebook.com |
-| Microsoft 365 | admin.microsoft.com |
-| OpenAI API | platform.openai.com |
-| Revolut Business | business.revolut.com |
+- Amazon
+- eBay
+- Zalando
+- MediaMarkt
+- Otto
+- AliExpress
+- GitHub Billing
 
-> **Note on selectors:** Shop plugins scrape order history pages. Since shops update their frontends regularly, selectors may break over time. Fixes go into `src/plugins/<shop>.js`.
+### Services & Platforms
+
+- PayPal
+- ChatGPT
+- OpenAI API
+- Google Ads
+- Google Pay
+- LinkedIn
+- Meta Ads
+- Microsoft 365
+- Revolut Business
+- Deutsche GigaNetz Kundenportal
+
+### Enterprise / SAP
+
+- SAP Fiori / HR (payroll statements, HR PDFs, DEÜV documents) — host configurable, see below
+- Azure AD / SAML SSO environments (login is detected and awaited)
 
 ---
 
 ## Features
 
-- **Automatic invoice download** — opens a background tab per shop, scrapes the order history, and fetches PDFs
-- **Paperless-ngx integration** — uploads directly to your Paperless instance via API
-- **Duplicate detection** — two-stage check: local cache (`chrome.storage.local`) + Paperless API query
-- **Login detection** — if a shop redirects to its sign-in page, the tab is brought to the foreground and the extension waits up to 5 minutes for you to log in, then continues automatically
-- **Per-shop Paperless tags** — assign different tags per shop/service
-- **Per-shop custom fields** — assign Paperless custom fields (all types supported: text, date, integer, monetary, URL, boolean, select, document link) per shop
-- **Date range selection** — choose a year or a custom date range from the popup
-- **MV3 service worker keepalive** — ping loop prevents the service worker from sleeping mid-download
-- **mTLS support** — Paperless API calls run in an offscreen document with full fetch() support
+- automatic document collection
+- choose what to upload: search first, review the list (documents already in Paperless are marked), then upload only the checked ones
+- direct Paperless-ngx upload (toggle "Vor dem Hochladen auswählen" off)
+- run log survives a closed popup and is shown again when it is reopened
+- duplicate detection
+- SAP/Fiori OData integration
+- Azure AD SSO compatibility
+- browser-session based authentication
+- per-source tags, custom fields, document type and correspondent
+- document date (`created`) taken from the source where available
+- background downloads
+- mTLS-compatible uploads
+- extensible plugin architecture
+- dependency-free unit tests (`npm test`)
 
 ---
 
-## Project Structure
+## SAP / Fiori Support
 
+DocFlow collects PDFs from SAP Gateway OData services that expose
+*categories → periods → PDF streams* (reference service: `XSS_PDF_VIEWER_SRV`,
+used for payroll statements, HR PDFs and DEÜV documents). It runs inside the
+authenticated browser session, so SSO (Azure AD, SAML) works without storing
+credentials.
+
+### Configuration
+
+The SAP host is **not** hardcoded. In the extension settings (card *SAP / Fiori*):
+
+1. **Start-URL der Fiori-App** — paste the full URL of the payslip/document app
+   from your browser's address bar (e.g. `https://sap.example.com/sap/bc/ui2/flp?sap-client=100#ZXSSFORMVIEWER-display&/Categories?tab=2PAYSTUB`).
+   The host is derived from it.
+2. Click **Zugriff erlauben** — the browser asks once for access to that host.
+   DocFlow then registers its content script for that origin dynamically
+   (`chrome.scripting.registerContentScripts`); nothing else in the manifest changes.
+3. **OData-Service-Pfad** (optional) — e.g. `/sap/opu/odata/kwp/XSS_PDF_VIEWER_SRV`.
+   If left empty, DocFlow looks the service up in the Gateway catalog of the
+   active session and falls back to the default path.
+4. **SAP-Mandant** (optional), then **Einstellungen speichern**.
+5. Enable *SAP Fiori / HR* under *Shops aktivieren* and, if you like, assign
+   tags, a document type and a correspondent to the source.
+
+### How discovery works
+
+- `$metadata` of the service is analysed: the entity type with
+  `m:HasStream="true"` provides the PDF stream set and its keys, the entity type
+  with a navigation property provides the category set and the period
+  navigation. Anything that cannot be derived falls back to the known
+  `CategorieSet` / `Cat2Period` / `PDFContentSet` model.
+- Period texts such as `01.01.2025 - 31.01.2025`, `15.03.2024`, `02.2024`,
+  `20250131` or `/Date(...)/` become the document date (period end). Rows with
+  an unrecognised period are still collected, undated.
+- Downloads are validated as PDF (content type or `%PDF-` magic bytes), so an
+  expired session's HTML login page is never archived.
+- Filenames look like `20250131_sap_<category>_<period>_sap-<view>-<key>.pdf`;
+  the trailing token is also the duplicate-detection key.
+- With *Debug-Logging* enabled the plugin logs counts and entity names only —
+  never document keys, periods or URLs.
+
+---
+
+## Plugin Architecture
+
+Plugins live inside:
+
+```text
+src/plugins/
 ```
-invoiceflow/
-├── manifest.json          # MV3 manifest
-├── popup.html             # Browser action popup
-├── options.html           # Settings page
-├── offscreen.html         # Offscreen document (mTLS fetch context)
-├── src/
-│   ├── popup.js           # Popup logic
-│   ├── options.js         # Settings logic
-│   ├── background.js      # Service worker (download coordination)
-│   ├── paperless.js       # Paperless-ngx API client
-│   ├── content.js         # Content script router
-│   ├── offscreen.js       # Offscreen document handler
-│   └── plugins/
-│       ├── amazon.js
-│       ├── ebay.js
-│       ├── zalando.js
-│       ├── mediamarkt.js
-│       ├── otto.js
-│       ├── aliexpress.js
-│       ├── chatgpt.js
-│       ├── github.js
-│       ├── googleads.js
-│       ├── googlepay.js
-│       ├── linkedin.js
-│       ├── metaads.js
-│       ├── microsoft365.js
-│       ├── openaiapi.js
-│       ├── paypal.js
-│       └── revolut.js
-└── icons/
-    ├── icon16.png
-    ├── icon48.png
-    └── icon128.png
+
+Examples:
+
+- amazon.js
+- paypal.js
+- microsoft365.js
+- sapfiori.js
+
+Plugins can:
+
+- scrape pages
+- call APIs
+- use SAP OData
+- fetch PDFs directly
+- reuse authenticated browser sessions
+
+A plugin is a plain script (no module) that registers itself on the page:
+
+```js
+window.DocFlowPlugin = (() => {
+  return {
+    name: 'Example',
+
+    // Returns the documents in [dateFrom, dateTo]. sourceConfig is the
+    // per-source configuration from the settings page (currently SAP only).
+    async getDocuments(dateFrom, dateTo, sourceConfig) { /* ... */ },
+
+    // Downloads one document and returns a Blob (PDF).
+    async fetchDocument(url, sourceConfig) { /* ... */ },
+
+    // Optional (Amazon): scrape only the current page and return
+    // { documents, nextUrl } for background-driven pagination.
+    async getDocumentsFromCurrentPage(dateFrom, dateTo) { /* ... */ },
+  };
+})();
 ```
+
+Each document object:
+
+```js
+{
+  orderId:     'unique-id',            // duplicate-detection key (required)
+  documentUrl: 'https://…/file.pdf',   // passed back to fetchDocument (required)
+  filename:    '20250131_29,99EUR_shop_unique-id.pdf', // required
+  date:        '2025-01-31T00:00:00.000Z', // becomes Paperless "created" (optional)
+  amount:      '29.99',                // optional
+  title:       '…',                    // optional; default = filename without .pdf
+  category, documentType, source, mimeType, meta // optional extras
+}
+```
+
+Content scripts are wired per origin in `manifest.json` (`content_scripts`);
+the SAP plugin is registered dynamically for the configured host.
+
+**Legacy compatibility:** `window.InvoiceFlowPlugin`, `getInvoices`,
+`fetchInvoice`, `getInvoicesFromCurrentPage` and the `invoiceUrl` field are
+still accepted by `src/content.js` / `src/background.js`, but new plugins
+should use the names above.
 
 ---
 
 ## Installation
 
-### Requirements
+```bash
+git clone https://github.com/BMWfan/docflow.git
+cd docflow
+```
 
-- Chrome 109+ or Microsoft Edge 109+
-- A running [Paperless-ngx](https://docs.paperless-ngx.com) instance
+Then load unpacked in:
 
-### 1. Clone the repository
+- chrome://extensions
+- edge://extensions
+
+Developer mode must be enabled.
+
+---
+
+## Development
+
+No build step and no dependencies. Requirements: Node ≥ 22 (tests use `node:test`).
 
 ```bash
-git clone https://github.com/BMWfan/invoiceflow.git
-cd invoiceflow
+npm test          # unit tests (test/*.test.mjs)
+npm run check     # node --check on every src/**/*.js
 ```
 
-### 2. Load the extension
+Tests load the extension scripts in a `vm` sandbox with stubbed `chrome`,
+`window`, `document` and `fetch` globals (`test/helpers/load-script.mjs`), so
+plugin internals and message handling can be exercised without a browser.
 
-1. Open `chrome://extensions` (or `edge://extensions`)
-2. Enable **Developer mode** (top right)
-3. Click **Load unpacked**
-4. Select the `invoiceflow` folder
-
-The extension icon appears in the toolbar.
+Branch policy (enforced by CI): `feature/*` or `fix/*` → `release/x.y.z` → `main`.
+The `release/x.y.z` suffix must equal the `version` in `manifest.json`; merging a
+release branch into `main` tags `vx.y.z` and publishes `docflow-vx.y.z.zip`.
 
 ---
 
-## Configuration
+## Vision
 
-1. Click the extension icon → **⚙ Settings**
-2. Enter your **Paperless-ngx URL** (e.g. `https://paperless.example.com`)
-3. Enter your **API token** (Paperless → Settings → API Token)
-4. Click **Test connection** — on success, available tags and custom fields load automatically
-5. Enable the shops you use
-6. Optionally assign Paperless **tags** and **custom fields** per shop
-7. Click **Save settings**
+DocFlow is evolving from an invoice downloader into a general document ingestion platform for:
 
----
+- SaaS platforms
+- enterprise systems
+- SAP/Fiori environments
+- HR portals
+- authenticated web applications
+- browser-based automation workflows
 
-## Usage
+Long-term goals include:
 
-1. Open the **extension popup**
-2. Select the shops you are logged into
-3. Choose a **time range** (year dropdown or custom date range)
-4. Click **Start download**
-
-The extension opens a background tab per shop, scrapes the invoice list, checks for duplicates, and uploads new invoices to Paperless.
-
-### Login handling
-
-If a shop redirects to its login page, the tab is brought to the foreground. The extension waits up to **5 minutes** for you to log in, then automatically navigates back and continues.
-
-### Duplicate detection
-
-For each invoice, two checks run before uploading:
-
-1. **Local cache** (`chrome.storage.local`) — processed order IDs are stored locally
-2. **Paperless API** — `GET /api/documents/?query=<orderId>`
-
-Only invoices not found in either store are uploaded.
-
-### Filename format
-
-```
-YYYYMMDD_<amount>EUR_<shop>_<orderId>.pdf
-```
-
-Example: `20240315_29,99EUR_amazon_302-1234567-8901234.pdf`
-
----
-
-## Writing a new shop plugin
-
-Each plugin is an IIFE that sets `window.InvoiceFlowPlugin`. Create a new file at `src/plugins/<shopname>.js`:
-
-```javascript
-window.InvoiceFlowPlugin = {
-  name: 'MyShop',
-  domains: ['myshop.com'],
-
-  async getInvoices(dateFrom, dateTo) {
-    // Parse order history page and return invoice list
-    return [
-      {
-        orderId:    'ORDER-123',
-        date:       '2024-03-15T00:00:00.000Z',
-        amount:     '29.99',
-        invoiceUrl: 'https://myshop.com/invoices/ORDER-123.pdf',
-        filename:   '20240315_29,99EUR_myshop_ORDER-123.pdf',
-      }
-    ];
-  },
-
-  async fetchInvoice(url) {
-    // Runs in content script context — session cookies are available
-    const resp = await fetch(url, { credentials: 'include' });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    return resp.blob();
-  },
-};
-```
-
-Then add to `manifest.json`:
-- `host_permissions`: `"*://*.myshop.com/*"`
-- `content_scripts`: new entry with `src/content.js` + your plugin file
-
-And in `src/background.js` → `SHOP_START_URL`, add the invoice history start URL.
-
----
-
-## Architecture
-
-```
-popup.js ──────────────────────────────────────► background.js
-  (START_DOWNLOAD)                              (Service Worker)
-                                                      │
-  ◄──── chrome.runtime.connect('progress') ──────────┤
-  (live updates)                                      │
-                                               opens tab per shop
-                                                      │
-                                             content.js + plugin.js
-                                               GET_INVOICES / GET_INVOICES_PAGE
-                                                      │
-                                              ◄────────┘ invoices[]
-                                                      │
-                                              per invoice:
-                                               ├─ duplicate check (cache + Paperless)
-                                               ├─ FETCH_INVOICE → blob (content script)
-                                               └─ UPLOAD_DOCUMENT (offscreen → mTLS)
-                                                      │
-                                                offscreen.js
-                                               (paperless.js API client)
-```
-
----
-
-## Privacy
-
-InvoiceFlow stores data exclusively in your browser:
-- Paperless URL and API token (`chrome.storage.sync` — your browser profile only)
-- Processed order IDs as a duplicate cache (`chrome.storage.local`)
-
-No data is sent to any third party.
-
----
-
-## Changelog
-
-### v0.2.5
-- Moved PayPal from "Online Shops" to "Services" section in popup and settings
-
-### v0.2.4
-- Fixed custom fields upload format for Paperless `post_document` API (`{"id": "value"}` object)
-- Fixed select-type custom fields showing `[object Object]` — now correctly renders labels from `extra_data.select_options`
-
-### v0.2.3
-- Full custom field type support: select (predefined dropdown), boolean (yes/no dropdown), date, integer, monetary, URL, document link, string
-
-### v0.2.2
-- Per-shop custom fields: assign any Paperless custom field with a value to each shop via the settings page
-
-### v0.2.1
-- Login detection: if a shop redirects to a sign-in page, the tab becomes active and the extension waits up to 5 minutes for login, then continues automatically
-- Removed personal Paperless URL from settings placeholder
-
-### v0.2.0
-- **11 new shop plugins**: AliExpress, ChatGPT, GitHub, Google Ads, Google Pay, LinkedIn, Meta Ads, Microsoft 365, OpenAI API, PayPal, Revolut
-- Popup split into "Online Shops" and "Services" sections
-- Per-shop Paperless tags
-
-### v0.1.10
-- Fixed Amazon invoice detection: correct URL (`/gp/css/order-history?timeFilter=year-X`), popover selector (`span[data-a-popover]`), and CSD render timing
-
-### v0.1.9
-- Amazon: full popover + direct PDF support, 20 s polling for Client-Side Decryption
-
-### v0.1.8
-- Amazon navigation: single-tab page navigation with SW keepalive ping loop
-
-### v0.1.7 and earlier
-- Initial release with Amazon, eBay, Zalando, MediaMarkt, Otto
-- Paperless-ngx integration with mTLS offscreen document
-- Duplicate detection, per-shop tags, date range selection
+- mapping SAP metadata (period, view) to Paperless custom fields
+- more SAP/Fiori document services beyond the payslip viewer
+- enterprise document connectors
+- metadata-driven integrations
 
 ---
 
