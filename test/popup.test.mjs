@@ -86,11 +86,13 @@ test('popup stays empty without a stored run', async () => {
 
 // ─── selection before upload ─────────────────────────────────────────────────
 
+// Plugins store document dates as local calendar days, so build fixtures the same way
+// (a UTC-midnight string shows the previous day in time zones west of UTC).
 const DISCOVERY = {
   createdAt: Date.now(), dateFrom: '2025-01-01', dateTo: '2025-12-31', shops: ['sapfiori', 'github'],
   documents: [
-    { shop: 'sapfiori', orderId: 'sap-2PAYSTUB-K1', filename: '20250131_sap_Entgeltnachweise_2025_01_sap-2PAYSTUB-K1.pdf', date: '2025-01-31T00:00:00.000Z', category: 'Entgeltnachweise', status: 'new' },
-    { shop: 'sapfiori', orderId: 'sap-2PAYSTUB-K2', filename: '20250228_sap_Entgeltnachweise_2025_02_sap-2PAYSTUB-K2.pdf', date: '2025-02-28T00:00:00.000Z', category: 'Entgeltnachweise', status: 'paperless' },
+    { shop: 'sapfiori', orderId: 'sap-2PAYSTUB-K1', filename: '20250131_sap_Entgeltnachweise_2025_01_sap-2PAYSTUB-K1.pdf', date: new Date(2025, 0, 31).toISOString(), category: 'Entgeltnachweise', status: 'new' },
+    { shop: 'sapfiori', orderId: 'sap-2PAYSTUB-K2', filename: '20250228_sap_Entgeltnachweise_2025_02_sap-2PAYSTUB-K2.pdf', date: new Date(2025, 1, 28).toISOString(), category: 'Entgeltnachweise', status: 'paperless' },
     { shop: 'github', orderId: 'G1', filename: '20250301_4,00EUR_github_G1.pdf', date: null, category: null, status: 'new' },
   ],
 };
